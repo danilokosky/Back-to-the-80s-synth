@@ -685,6 +685,8 @@ export const HeraApp: React.FC = () => {
 
     const cardBgClass = isProjectedOverlay ? 'bg-zinc-950' : 'bg-zinc-950/70';
 
+    const isJp8 = (params.SynthModel ?? 0) >= 0.5;
+
     switch (sectionId) {
       case 'lfo':
         return (
@@ -695,9 +697,30 @@ export const HeraApp: React.FC = () => {
             className={`flex-shrink-0 ${cardBgClass} border-t-4 border-t-yellow-500 border border-zinc-800 rounded p-2 flex flex-col justify-between shadow-md`}
           >
             <div className="text-[10px] font-black font-mono tracking-widest text-yellow-400 uppercase text-center pb-1 border-b border-zinc-800/80">
-              LFO
+              {isJp8 ? 'JP-8 LFO' : 'LFO'}
             </div>
             <div className="flex items-center justify-center gap-1.5 my-3 py-1">
+              {isJp8 && (
+                <div className="flex flex-col justify-center pr-1 border-r border-zinc-800/80">
+                  <ToggleSwitch
+                    label="Wave"
+                    options={[
+                      { label: 'SIN', value: 0 },
+                      { label: 'TRI', value: 1 },
+                      { label: 'SAW', value: 2 },
+                      { label: 'SQR', value: 3 },
+                    ]}
+                    value={Math.round(params.JP8LfoWave ?? 0)}
+                    onChange={(v) => handleParamChange('JP8LfoWave', v)}
+                    isMidiLearnActive={isMidiLearnActive}
+                    isSelectedForLearn={selectedLearnParam === 'JP8LfoWave'}
+                    mappedCC={getMappedCC('JP8LfoWave')}
+                    channelLabel={getChannelLabelForParam('JP8LfoWave')}
+                    onSelectForLearn={() => handleSelectForLearn('JP8LfoWave')}
+                    onUnmap={() => handleUnmapParam('JP8LfoWave')}
+                  />
+                </div>
+              )}
               <Slider
                 label="Rate"
                 value={params.LFORate}
@@ -725,7 +748,7 @@ export const HeraApp: React.FC = () => {
                 onUnmap={() => handleUnmapParam('LFODelay')}
               />
             </div>
-            {/* Manual LFO Trigger button (iconic Juno button - Mappable via MIDI!) */}
+            {/* Manual LFO Trigger button (iconic Juno/Jupiter button - Mappable via MIDI!) */}
             <div className="relative pt-1 border-t border-zinc-800/80 flex flex-col items-center">
               <MidiLearnBadge
                 isMidiLearnActive={isMidiLearnActive}
@@ -770,145 +793,444 @@ export const HeraApp: React.FC = () => {
             key={isProjectedOverlay ? 'proj-dco' : 'rack-dco'}
             ref={refProp}
             style={overlayStyle}
-            className={`flex-shrink-0 ${cardBgClass} border-t-4 border-t-red-500 border border-zinc-800 rounded p-2 flex flex-col justify-between shadow-md`}
+            className={`flex-shrink-0 ${cardBgClass} border-t-4 ${
+              isJp8 ? 'border-t-orange-500' : 'border-t-red-500'
+            } border border-zinc-800 rounded p-2 flex flex-col justify-between shadow-md`}
           >
-            <div className="text-[10px] font-black font-mono tracking-widest text-red-400 uppercase text-center pb-1 border-b border-zinc-800/80">
-              DCO (Oscillator)
+            <div
+              className={`text-[10px] font-black font-mono tracking-widest ${
+                isJp8 ? 'text-orange-400' : 'text-red-400'
+              } uppercase text-center pb-1 border-b border-zinc-800/80`}
+            >
+              {isJp8 ? 'VCO-1 & VCO-2 • X-MOD • SYNC (JUPITER-8)' : 'DCO (Oscillator)'}
             </div>
-            <div className="flex items-center justify-center gap-1.5 my-3 py-1">
-              {/* Selectors Column */}
-              <div className="flex flex-col gap-1 pr-1 border-r border-zinc-800/80">
-                <ToggleSwitch
-                  label="Range"
-                  options={[
-                    { label: "16'", value: 0 },
-                    { label: "8'", value: 1 },
-                    { label: "4'", value: 2 },
-                  ]}
-                  value={params.DCORange}
-                  onChange={(v) => handleParamChange('DCORange', v)}
+            {!isJp8 ? (
+              <div className="flex items-center justify-center gap-1.5 my-3 py-1">
+                {/* Juno-60 Selectors Column */}
+                <div className="flex flex-col gap-1 pr-1 border-r border-zinc-800/80">
+                  <ToggleSwitch
+                    label="Range"
+                    options={[
+                      { label: "16'", value: 0 },
+                      { label: "8'", value: 1 },
+                      { label: "4'", value: 2 },
+                    ]}
+                    value={params.DCORange}
+                    onChange={(v) => handleParamChange('DCORange', v)}
+                    isMidiLearnActive={isMidiLearnActive}
+                    isSelectedForLearn={selectedLearnParam === 'DCORange'}
+                    mappedCC={getMappedCC('DCORange')}
+                    channelLabel={getChannelLabelForParam('DCORange')}
+                    onSelectForLearn={() => handleSelectForLearn('DCORange')}
+                    onUnmap={() => handleUnmapParam('DCORange')}
+                  />
+                  <ToggleSwitch
+                    label="LFO Trig"
+                    options={[
+                      { label: 'Man', value: 0 },
+                      { label: 'Auto', value: 1 },
+                    ]}
+                    value={params.LFOTrigMode}
+                    onChange={(v) => handleParamChange('LFOTrigMode', v)}
+                    isMidiLearnActive={isMidiLearnActive}
+                    isSelectedForLearn={selectedLearnParam === 'LFOTrigMode'}
+                    mappedCC={getMappedCC('LFOTrigMode')}
+                    channelLabel={getChannelLabelForParam('LFOTrigMode')}
+                    onSelectForLearn={() => handleSelectForLearn('LFOTrigMode')}
+                    onUnmap={() => handleUnmapParam('LFOTrigMode')}
+                  />
+                  <ToggleSwitch
+                    label="PWM"
+                    options={[
+                      { label: 'Man', value: 0 },
+                      { label: 'LFO', value: 1 },
+                      { label: 'Env', value: 2 },
+                    ]}
+                    value={params.DCOPWMMod}
+                    onChange={(v) => handleParamChange('DCOPWMMod', v)}
+                    isMidiLearnActive={isMidiLearnActive}
+                    isSelectedForLearn={selectedLearnParam === 'DCOPWMMod'}
+                    mappedCC={getMappedCC('DCOPWMMod')}
+                    channelLabel={getChannelLabelForParam('DCOPWMMod')}
+                    onSelectForLearn={() => handleSelectForLearn('DCOPWMMod')}
+                    onUnmap={() => handleUnmapParam('DCOPWMMod')}
+                  />
+                </div>
+
+                {/* Juno-60 DCO Sliders */}
+                <Slider
+                  label="LFO"
+                  value={params.DCOPitchModDepth}
+                  onChange={(v) => handleParamChange('DCOPitchModDepth', v)}
+                  defaultValue={0}
+                  color="red"
                   isMidiLearnActive={isMidiLearnActive}
-                  isSelectedForLearn={selectedLearnParam === 'DCORange'}
-                  mappedCC={getMappedCC('DCORange')}
-                  channelLabel={getChannelLabelForParam('DCORange')}
-                  onSelectForLearn={() => handleSelectForLearn('DCORange')}
-                  onUnmap={() => handleUnmapParam('DCORange')}
+                  isSelectedForLearn={selectedLearnParam === 'DCOPitchModDepth'}
+                  mappedCC={getMappedCC('DCOPitchModDepth')}
+                  channelLabel={getChannelLabelForParam('DCOPitchModDepth')}
+                  onSelectForLearn={() => handleSelectForLearn('DCOPitchModDepth')}
+                  onUnmap={() => handleUnmapParam('DCOPitchModDepth')}
                 />
-                <ToggleSwitch
-                  label="LFO Trig"
-                  options={[
-                    { label: 'Man', value: 0 },
-                    { label: 'Auto', value: 1 },
-                  ]}
-                  value={params.LFOTrigMode}
-                  onChange={(v) => handleParamChange('LFOTrigMode', v)}
-                  isMidiLearnActive={isMidiLearnActive}
-                  isSelectedForLearn={selectedLearnParam === 'LFOTrigMode'}
-                  mappedCC={getMappedCC('LFOTrigMode')}
-                  channelLabel={getChannelLabelForParam('LFOTrigMode')}
-                  onSelectForLearn={() => handleSelectForLearn('LFOTrigMode')}
-                  onUnmap={() => handleUnmapParam('LFOTrigMode')}
-                />
-                <ToggleSwitch
+                <Slider
                   label="PWM"
-                  options={[
-                    { label: 'Man', value: 0 },
-                    { label: 'LFO', value: 1 },
-                    { label: 'Env', value: 2 },
-                  ]}
-                  value={params.DCOPWMMod}
-                  onChange={(v) => handleParamChange('DCOPWMMod', v)}
+                  value={params.DCOPWMDepth}
+                  onChange={(v) => handleParamChange('DCOPWMDepth', v)}
+                  defaultValue={0}
+                  color="red"
                   isMidiLearnActive={isMidiLearnActive}
-                  isSelectedForLearn={selectedLearnParam === 'DCOPWMMod'}
-                  mappedCC={getMappedCC('DCOPWMMod')}
-                  channelLabel={getChannelLabelForParam('DCOPWMMod')}
-                  onSelectForLearn={() => handleSelectForLearn('DCOPWMMod')}
-                  onUnmap={() => handleUnmapParam('DCOPWMMod')}
+                  isSelectedForLearn={selectedLearnParam === 'DCOPWMDepth'}
+                  mappedCC={getMappedCC('DCOPWMDepth')}
+                  channelLabel={getChannelLabelForParam('DCOPWMDepth')}
+                  onSelectForLearn={() => handleSelectForLearn('DCOPWMDepth')}
+                  onUnmap={() => handleUnmapParam('DCOPWMDepth')}
+                />
+                <Slider
+                  label="Pulse"
+                  value={params.DCOPulseLevel}
+                  onChange={(v) => handleParamChange('DCOPulseLevel', v)}
+                  defaultValue={0}
+                  color="red"
+                  isMidiLearnActive={isMidiLearnActive}
+                  isSelectedForLearn={selectedLearnParam === 'DCOPulseLevel'}
+                  mappedCC={getMappedCC('DCOPulseLevel')}
+                  channelLabel={getChannelLabelForParam('DCOPulseLevel')}
+                  onSelectForLearn={() => handleSelectForLearn('DCOPulseLevel')}
+                  onUnmap={() => handleUnmapParam('DCOPulseLevel')}
+                />
+                <Slider
+                  label="Saw"
+                  value={params.DCOSawLevel}
+                  onChange={(v) => handleParamChange('DCOSawLevel', v)}
+                  defaultValue={1.0}
+                  color="red"
+                  isMidiLearnActive={isMidiLearnActive}
+                  isSelectedForLearn={selectedLearnParam === 'DCOSawLevel'}
+                  mappedCC={getMappedCC('DCOSawLevel')}
+                  channelLabel={getChannelLabelForParam('DCOSawLevel')}
+                  onSelectForLearn={() => handleSelectForLearn('DCOSawLevel')}
+                  onUnmap={() => handleUnmapParam('DCOSawLevel')}
+                />
+                <Slider
+                  label="Sub"
+                  value={params.DCOSubLevel}
+                  onChange={(v) => handleParamChange('DCOSubLevel', v)}
+                  defaultValue={0}
+                  color="red"
+                  isMidiLearnActive={isMidiLearnActive}
+                  isSelectedForLearn={selectedLearnParam === 'DCOSubLevel'}
+                  mappedCC={getMappedCC('DCOSubLevel')}
+                  channelLabel={getChannelLabelForParam('DCOSubLevel')}
+                  onSelectForLearn={() => handleSelectForLearn('DCOSubLevel')}
+                  onUnmap={() => handleUnmapParam('DCOSubLevel')}
+                />
+                <Slider
+                  label="Noise"
+                  value={params.DCONoiseLevel}
+                  onChange={(v) => handleParamChange('DCONoiseLevel', v)}
+                  defaultValue={0}
+                  color="red"
+                  isMidiLearnActive={isMidiLearnActive}
+                  isSelectedForLearn={selectedLearnParam === 'DCONoiseLevel'}
+                  mappedCC={getMappedCC('DCONoiseLevel')}
+                  channelLabel={getChannelLabelForParam('DCONoiseLevel')}
+                  onSelectForLearn={() => handleSelectForLearn('DCONoiseLevel')}
+                  onUnmap={() => handleUnmapParam('DCONoiseLevel')}
                 />
               </div>
+            ) : (
+              /* JUPITER-8 DUAL VCO + X-MOD + HARD SYNC PANEL */
+              <div className="flex items-center justify-center gap-1.5 my-3 py-1">
+                {/* Column 1: Assign Mode + VCO-1 Range + PWM Source */}
+                <div className="flex flex-col gap-1 pr-1 border-r border-zinc-800/80">
+                  <ToggleSwitch
+                    label="Assign"
+                    options={[
+                      { label: 'P1', value: 0 },
+                      { label: 'P2', value: 1 },
+                      { label: 'UNI', value: 2 },
+                      { label: 'SOLO', value: 3 },
+                    ]}
+                    value={Math.round(params.JP8VoiceMode ?? 0)}
+                    onChange={(v) => handleParamChange('JP8VoiceMode', v)}
+                    activeColorClass="bg-orange-600 text-white shadow-[0_0_8px_#ea580c] font-black border border-orange-400"
+                    isMidiLearnActive={isMidiLearnActive}
+                    isSelectedForLearn={selectedLearnParam === 'JP8VoiceMode'}
+                    mappedCC={getMappedCC('JP8VoiceMode')}
+                    channelLabel={getChannelLabelForParam('JP8VoiceMode')}
+                    onSelectForLearn={() => handleSelectForLearn('JP8VoiceMode')}
+                    onUnmap={() => handleUnmapParam('JP8VoiceMode')}
+                  />
+                  <ToggleSwitch
+                    label="VCO-1 Oct"
+                    options={[
+                      { label: "16'", value: 0 },
+                      { label: "8'", value: 1 },
+                      { label: "4'", value: 2 },
+                    ]}
+                    value={params.DCORange}
+                    onChange={(v) => handleParamChange('DCORange', v)}
+                    isMidiLearnActive={isMidiLearnActive}
+                    isSelectedForLearn={selectedLearnParam === 'DCORange'}
+                    mappedCC={getMappedCC('DCORange')}
+                    channelLabel={getChannelLabelForParam('DCORange')}
+                    onSelectForLearn={() => handleSelectForLearn('DCORange')}
+                    onUnmap={() => handleUnmapParam('DCORange')}
+                  />
+                  <ToggleSwitch
+                    label="PWM Src"
+                    options={[
+                      { label: 'Man', value: 0 },
+                      { label: 'LFO', value: 1 },
+                      { label: 'Env1', value: 2 },
+                    ]}
+                    value={params.DCOPWMMod}
+                    onChange={(v) => handleParamChange('DCOPWMMod', v)}
+                    isMidiLearnActive={isMidiLearnActive}
+                    isSelectedForLearn={selectedLearnParam === 'DCOPWMMod'}
+                    mappedCC={getMappedCC('DCOPWMMod')}
+                    channelLabel={getChannelLabelForParam('DCOPWMMod')}
+                    onSelectForLearn={() => handleSelectForLearn('DCOPWMMod')}
+                    onUnmap={() => handleUnmapParam('DCOPWMMod')}
+                  />
+                </div>
 
-              {/* DCO Sliders */}
-              <Slider
-                label="LFO"
-                value={params.DCOPitchModDepth}
-                onChange={(v) => handleParamChange('DCOPitchModDepth', v)}
-                defaultValue={0}
-                color="red"
-                isMidiLearnActive={isMidiLearnActive}
-                isSelectedForLearn={selectedLearnParam === 'DCOPitchModDepth'}
-                mappedCC={getMappedCC('DCOPitchModDepth')}
-                channelLabel={getChannelLabelForParam('DCOPitchModDepth')}
-                onSelectForLearn={() => handleSelectForLearn('DCOPitchModDepth')}
-                onUnmap={() => handleUnmapParam('DCOPitchModDepth')}
-              />
-              <Slider
-                label="PWM"
-                value={params.DCOPWMDepth}
-                onChange={(v) => handleParamChange('DCOPWMDepth', v)}
-                defaultValue={0}
-                color="red"
-                isMidiLearnActive={isMidiLearnActive}
-                isSelectedForLearn={selectedLearnParam === 'DCOPWMDepth'}
-                mappedCC={getMappedCC('DCOPWMDepth')}
-                channelLabel={getChannelLabelForParam('DCOPWMDepth')}
-                onSelectForLearn={() => handleSelectForLearn('DCOPWMDepth')}
-                onUnmap={() => handleUnmapParam('DCOPWMDepth')}
-              />
-              <Slider
-                label="Pulse"
-                value={params.DCOPulseLevel}
-                onChange={(v) => handleParamChange('DCOPulseLevel', v)}
-                defaultValue={0}
-                color="red"
-                isMidiLearnActive={isMidiLearnActive}
-                isSelectedForLearn={selectedLearnParam === 'DCOPulseLevel'}
-                mappedCC={getMappedCC('DCOPulseLevel')}
-                channelLabel={getChannelLabelForParam('DCOPulseLevel')}
-                onSelectForLearn={() => handleSelectForLearn('DCOPulseLevel')}
-                onUnmap={() => handleUnmapParam('DCOPulseLevel')}
-              />
-              <Slider
-                label="Saw"
-                value={params.DCOSawLevel}
-                onChange={(v) => handleParamChange('DCOSawLevel', v)}
-                defaultValue={1.0}
-                color="red"
-                isMidiLearnActive={isMidiLearnActive}
-                isSelectedForLearn={selectedLearnParam === 'DCOSawLevel'}
-                mappedCC={getMappedCC('DCOSawLevel')}
-                channelLabel={getChannelLabelForParam('DCOSawLevel')}
-                onSelectForLearn={() => handleSelectForLearn('DCOSawLevel')}
-                onUnmap={() => handleUnmapParam('DCOSawLevel')}
-              />
-              <Slider
-                label="Sub"
-                value={params.DCOSubLevel}
-                onChange={(v) => handleParamChange('DCOSubLevel', v)}
-                defaultValue={0}
-                color="red"
-                isMidiLearnActive={isMidiLearnActive}
-                isSelectedForLearn={selectedLearnParam === 'DCOSubLevel'}
-                mappedCC={getMappedCC('DCOSubLevel')}
-                channelLabel={getChannelLabelForParam('DCOSubLevel')}
-                onSelectForLearn={() => handleSelectForLearn('DCOSubLevel')}
-                onUnmap={() => handleUnmapParam('DCOSubLevel')}
-              />
-              <Slider
-                label="Noise"
-                value={params.DCONoiseLevel}
-                onChange={(v) => handleParamChange('DCONoiseLevel', v)}
-                defaultValue={0}
-                color="red"
-                isMidiLearnActive={isMidiLearnActive}
-                isSelectedForLearn={selectedLearnParam === 'DCONoiseLevel'}
-                mappedCC={getMappedCC('DCONoiseLevel')}
-                channelLabel={getChannelLabelForParam('DCONoiseLevel')}
-                onSelectForLearn={() => handleSelectForLearn('DCONoiseLevel')}
-                onUnmap={() => handleUnmapParam('DCONoiseLevel')}
-              />
-            </div>
+                {/* Column 2: VCO-1 Wave + VCO-2 Wave + Pitch Env Dest */}
+                <div className="flex flex-col gap-1 pr-1 border-r border-zinc-800/80">
+                  <ToggleSwitch
+                    label="VCO-1 Wv"
+                    options={[
+                      { label: 'TRI', value: 0 },
+                      { label: 'SAW', value: 1 },
+                      { label: 'PLS', value: 2 },
+                      { label: 'SQR', value: 3 },
+                    ]}
+                    value={Math.round(params.JP8Vco1Wave ?? 1)}
+                    onChange={(v) => handleParamChange('JP8Vco1Wave', v)}
+                    isMidiLearnActive={isMidiLearnActive}
+                    isSelectedForLearn={selectedLearnParam === 'JP8Vco1Wave'}
+                    mappedCC={getMappedCC('JP8Vco1Wave')}
+                    channelLabel={getChannelLabelForParam('JP8Vco1Wave')}
+                    onSelectForLearn={() => handleSelectForLearn('JP8Vco1Wave')}
+                    onUnmap={() => handleUnmapParam('JP8Vco1Wave')}
+                  />
+                  <ToggleSwitch
+                    label="VCO-2 Wv"
+                    options={[
+                      { label: 'SAW', value: 0 },
+                      { label: 'PLS', value: 1 },
+                      { label: 'SIN', value: 2 },
+                    ]}
+                    value={Math.round(params.JP8Vco2Wave ?? 0)}
+                    onChange={(v) => handleParamChange('JP8Vco2Wave', v)}
+                    isMidiLearnActive={isMidiLearnActive}
+                    isSelectedForLearn={selectedLearnParam === 'JP8Vco2Wave'}
+                    mappedCC={getMappedCC('JP8Vco2Wave')}
+                    channelLabel={getChannelLabelForParam('JP8Vco2Wave')}
+                    onSelectForLearn={() => handleSelectForLearn('JP8Vco2Wave')}
+                    onUnmap={() => handleUnmapParam('JP8Vco2Wave')}
+                  />
+                  <ToggleSwitch
+                    label="VCO-2 Oct"
+                    options={[
+                      { label: '-1', value: 0 },
+                      { label: '0', value: 1 },
+                      { label: '+1', value: 2 },
+                      { label: '5th', value: 3 },
+                    ]}
+                    value={Math.round(params.JP8Vco2Range ?? 1)}
+                    onChange={(v) => handleParamChange('JP8Vco2Range', v)}
+                    isMidiLearnActive={isMidiLearnActive}
+                    isSelectedForLearn={selectedLearnParam === 'JP8Vco2Range'}
+                    mappedCC={getMappedCC('JP8Vco2Range')}
+                    channelLabel={getChannelLabelForParam('JP8Vco2Range')}
+                    onSelectForLearn={() => handleSelectForLearn('JP8Vco2Range')}
+                    onUnmap={() => handleUnmapParam('JP8Vco2Range')}
+                  />
+                </div>
+
+                {/* Column 3: Hard Sync + Pitch Env Target + LFO Trig */}
+                <div className="flex flex-col gap-1 pr-1 border-r border-zinc-800/80">
+                  <ToggleSwitch
+                    label="Sync 1←2"
+                    options={[
+                      { label: 'OFF', value: 0 },
+                      { label: 'SYNC', value: 1 },
+                    ]}
+                    value={params.JP8VcoSync >= 0.5 ? 1 : 0}
+                    onChange={(v) => handleParamChange('JP8VcoSync', v)}
+                    activeColorClass="bg-red-600 text-white shadow-[0_0_8px_#ef4444] font-black border border-red-400"
+                    isMidiLearnActive={isMidiLearnActive}
+                    isSelectedForLearn={selectedLearnParam === 'JP8VcoSync'}
+                    mappedCC={getMappedCC('JP8VcoSync')}
+                    channelLabel={getChannelLabelForParam('JP8VcoSync')}
+                    onSelectForLearn={() => handleSelectForLearn('JP8VcoSync')}
+                    onUnmap={() => handleUnmapParam('JP8VcoSync')}
+                  />
+                  <ToggleSwitch
+                    label="P-Env To"
+                    options={[
+                      { label: 'VCO2', value: 0 },
+                      { label: 'VCO1', value: 1 },
+                      { label: '1+2', value: 2 },
+                    ]}
+                    value={Math.round(params.JP8PitchEnvTarget ?? 0)}
+                    onChange={(v) => handleParamChange('JP8PitchEnvTarget', v)}
+                    isMidiLearnActive={isMidiLearnActive}
+                    isSelectedForLearn={selectedLearnParam === 'JP8PitchEnvTarget'}
+                    mappedCC={getMappedCC('JP8PitchEnvTarget')}
+                    channelLabel={getChannelLabelForParam('JP8PitchEnvTarget')}
+                    onSelectForLearn={() => handleSelectForLearn('JP8PitchEnvTarget')}
+                    onUnmap={() => handleUnmapParam('JP8PitchEnvTarget')}
+                  />
+                  <ToggleSwitch
+                    label="LFO Trig"
+                    options={[
+                      { label: 'Man', value: 0 },
+                      { label: 'Auto', value: 1 },
+                    ]}
+                    value={params.LFOTrigMode}
+                    onChange={(v) => handleParamChange('LFOTrigMode', v)}
+                    isMidiLearnActive={isMidiLearnActive}
+                    isSelectedForLearn={selectedLearnParam === 'LFOTrigMode'}
+                    mappedCC={getMappedCC('LFOTrigMode')}
+                    channelLabel={getChannelLabelForParam('LFOTrigMode')}
+                    onSelectForLearn={() => handleSelectForLearn('LFOTrigMode')}
+                    onUnmap={() => handleUnmapParam('LFOTrigMode')}
+                  />
+                </div>
+
+                {/* VCO Mod & Mixer Faders */}
+                <Slider
+                  label="LFO"
+                  value={params.DCOPitchModDepth}
+                  onChange={(v) => handleParamChange('DCOPitchModDepth', v)}
+                  defaultValue={0}
+                  color="red"
+                  isMidiLearnActive={isMidiLearnActive}
+                  isSelectedForLearn={selectedLearnParam === 'DCOPitchModDepth'}
+                  mappedCC={getMappedCC('DCOPitchModDepth')}
+                  channelLabel={getChannelLabelForParam('DCOPitchModDepth')}
+                  onSelectForLearn={() => handleSelectForLearn('DCOPitchModDepth')}
+                  onUnmap={() => handleUnmapParam('DCOPitchModDepth')}
+                />
+                <Slider
+                  label="PWM"
+                  value={params.DCOPWMDepth}
+                  onChange={(v) => handleParamChange('DCOPWMDepth', v)}
+                  defaultValue={0.35}
+                  color="red"
+                  isMidiLearnActive={isMidiLearnActive}
+                  isSelectedForLearn={selectedLearnParam === 'DCOPWMDepth'}
+                  mappedCC={getMappedCC('DCOPWMDepth')}
+                  channelLabel={getChannelLabelForParam('DCOPWMDepth')}
+                  onSelectForLearn={() => handleSelectForLearn('DCOPWMDepth')}
+                  onUnmap={() => handleUnmapParam('DCOPWMDepth')}
+                />
+                <Slider
+                  label="X-Mod"
+                  value={params.JP8CrossMod}
+                  onChange={(v) => handleParamChange('JP8CrossMod', v)}
+                  defaultValue={0}
+                  color="amber"
+                  isMidiLearnActive={isMidiLearnActive}
+                  isSelectedForLearn={selectedLearnParam === 'JP8CrossMod'}
+                  mappedCC={getMappedCC('JP8CrossMod')}
+                  channelLabel={getChannelLabelForParam('JP8CrossMod')}
+                  onSelectForLearn={() => handleSelectForLearn('JP8CrossMod')}
+                  onUnmap={() => handleUnmapParam('JP8CrossMod')}
+                />
+                <Slider
+                  label="P-Env1"
+                  value={params.JP8PitchEnvDepth}
+                  min={-1}
+                  max={1}
+                  step={0.02}
+                  bipolar
+                  onChange={(v) => handleParamChange('JP8PitchEnvDepth', v)}
+                  defaultValue={0}
+                  color="amber"
+                  isMidiLearnActive={isMidiLearnActive}
+                  isSelectedForLearn={selectedLearnParam === 'JP8PitchEnvDepth'}
+                  mappedCC={getMappedCC('JP8PitchEnvDepth')}
+                  channelLabel={getChannelLabelForParam('JP8PitchEnvDepth')}
+                  onSelectForLearn={() => handleSelectForLearn('JP8PitchEnvDepth')}
+                  onUnmap={() => handleUnmapParam('JP8PitchEnvDepth')}
+                />
+                <Slider
+                  label="Detune"
+                  value={params.JP8Vco2Detune}
+                  min={-1}
+                  max={1}
+                  step={0.02}
+                  bipolar
+                  onChange={(v) => handleParamChange('JP8Vco2Detune', v)}
+                  defaultValue={0.12}
+                  color="red"
+                  isMidiLearnActive={isMidiLearnActive}
+                  isSelectedForLearn={selectedLearnParam === 'JP8Vco2Detune'}
+                  mappedCC={getMappedCC('JP8Vco2Detune')}
+                  channelLabel={getChannelLabelForParam('JP8Vco2Detune')}
+                  onSelectForLearn={() => handleSelectForLearn('JP8Vco2Detune')}
+                  onUnmap={() => handleUnmapParam('JP8Vco2Detune')}
+                />
+                <Slider
+                  label="VCO-1"
+                  value={params.JP8Vco1Level}
+                  onChange={(v) => handleParamChange('JP8Vco1Level', v)}
+                  defaultValue={0.9}
+                  color="red"
+                  isMidiLearnActive={isMidiLearnActive}
+                  isSelectedForLearn={selectedLearnParam === 'JP8Vco1Level'}
+                  mappedCC={getMappedCC('JP8Vco1Level')}
+                  channelLabel={getChannelLabelForParam('JP8Vco1Level')}
+                  onSelectForLearn={() => handleSelectForLearn('JP8Vco1Level')}
+                  onUnmap={() => handleUnmapParam('JP8Vco1Level')}
+                />
+                <Slider
+                  label="VCO-2"
+                  value={params.JP8Vco2Level}
+                  onChange={(v) => handleParamChange('JP8Vco2Level', v)}
+                  defaultValue={0.75}
+                  color="red"
+                  isMidiLearnActive={isMidiLearnActive}
+                  isSelectedForLearn={selectedLearnParam === 'JP8Vco2Level'}
+                  mappedCC={getMappedCC('JP8Vco2Level')}
+                  channelLabel={getChannelLabelForParam('JP8Vco2Level')}
+                  onSelectForLearn={() => handleSelectForLearn('JP8Vco2Level')}
+                  onUnmap={() => handleUnmapParam('JP8Vco2Level')}
+                />
+                <Slider
+                  label="Sub"
+                  value={params.DCOSubLevel}
+                  onChange={(v) => handleParamChange('DCOSubLevel', v)}
+                  defaultValue={0}
+                  color="red"
+                  isMidiLearnActive={isMidiLearnActive}
+                  isSelectedForLearn={selectedLearnParam === 'DCOSubLevel'}
+                  mappedCC={getMappedCC('DCOSubLevel')}
+                  channelLabel={getChannelLabelForParam('DCOSubLevel')}
+                  onSelectForLearn={() => handleSelectForLearn('DCOSubLevel')}
+                  onUnmap={() => handleUnmapParam('DCOSubLevel')}
+                />
+                <Slider
+                  label="Noise"
+                  value={params.DCONoiseLevel}
+                  onChange={(v) => handleParamChange('DCONoiseLevel', v)}
+                  defaultValue={0}
+                  color="red"
+                  isMidiLearnActive={isMidiLearnActive}
+                  isSelectedForLearn={selectedLearnParam === 'DCONoiseLevel'}
+                  mappedCC={getMappedCC('DCONoiseLevel')}
+                  channelLabel={getChannelLabelForParam('DCONoiseLevel')}
+                  onSelectForLearn={() => handleSelectForLearn('DCONoiseLevel')}
+                  onUnmap={() => handleUnmapParam('DCONoiseLevel')}
+                />
+              </div>
+            )}
             <div className="text-[7.5px] font-mono text-zinc-500 text-center tracking-wider pt-1 border-t border-zinc-800/80">
-              POLYBLEP ANALOG WAVEFORMS
+              {isJp8
+                ? 'DUAL ANALOG VCO • AUDIO-RATE FM X-MOD • HARD SYNC'
+                : 'POLYBLEP ANALOG WAVEFORMS'}
             </div>
           </div>
         );
@@ -940,7 +1262,7 @@ export const HeraApp: React.FC = () => {
               />
             </div>
             <div className="text-[7.5px] font-mono text-zinc-500 text-center tracking-wider pt-1 border-t border-zinc-800/80">
-              4-WAY
+              {isJp8 ? 'CONTINUOUS' : '4-WAY'}
             </div>
           </div>
         );
@@ -954,9 +1276,44 @@ export const HeraApp: React.FC = () => {
             className={`flex-shrink-0 ${cardBgClass} border-t-4 border-t-cyan-400 border border-zinc-800 rounded p-2 flex flex-col justify-between shadow-md`}
           >
             <div className="text-[10px] font-black font-mono tracking-widest text-cyan-300 uppercase text-center pb-1 border-b border-zinc-800/80">
-              VCF (Filter)
+              {isJp8 ? 'VCF (12dB / 24dB IR3109)' : 'VCF (Filter)'}
             </div>
             <div className="flex items-center justify-center gap-1.5 my-3 py-1">
+              {isJp8 && (
+                <div className="flex flex-col gap-1 pr-1 border-r border-zinc-800/80">
+                  <ToggleSwitch
+                    label="Slope"
+                    options={[
+                      { label: '24dB', value: 0 },
+                      { label: '12dB', value: 1 },
+                    ]}
+                    value={params.JP8VcfSlope >= 0.5 ? 1 : 0}
+                    onChange={(v) => handleParamChange('JP8VcfSlope', v)}
+                    activeColorClass="bg-cyan-600 text-white shadow-[0_0_8px_#0891b2] font-black border border-cyan-400"
+                    isMidiLearnActive={isMidiLearnActive}
+                    isSelectedForLearn={selectedLearnParam === 'JP8VcfSlope'}
+                    mappedCC={getMappedCC('JP8VcfSlope')}
+                    channelLabel={getChannelLabelForParam('JP8VcfSlope')}
+                    onSelectForLearn={() => handleSelectForLearn('JP8VcfSlope')}
+                    onUnmap={() => handleUnmapParam('JP8VcfSlope')}
+                  />
+                  <ToggleSwitch
+                    label="Env Src"
+                    options={[
+                      { label: 'ENV2', value: 0 },
+                      { label: 'ENV1', value: 1 },
+                    ]}
+                    value={params.JP8VcfEnvSource >= 0.5 ? 1 : 0}
+                    onChange={(v) => handleParamChange('JP8VcfEnvSource', v)}
+                    isMidiLearnActive={isMidiLearnActive}
+                    isSelectedForLearn={selectedLearnParam === 'JP8VcfEnvSource'}
+                    mappedCC={getMappedCC('JP8VcfEnvSource')}
+                    channelLabel={getChannelLabelForParam('JP8VcfEnvSource')}
+                    onSelectForLearn={() => handleSelectForLearn('JP8VcfEnvSource')}
+                    onUnmap={() => handleUnmapParam('JP8VcfEnvSource')}
+                  />
+                </div>
+              )}
               <Slider
                 label="Freq"
                 value={params.VCFCutoff}
@@ -1041,7 +1398,11 @@ export const HeraApp: React.FC = () => {
               />
             </div>
             <div className="text-[7.5px] font-mono text-zinc-500 text-center tracking-wider pt-1 border-t border-zinc-800/80">
-              24dB/OCT RESONANT OTA
+              {isJp8
+                ? params.JP8VcfSlope >= 0.5
+                  ? '12dB/OCT 2-POLE OPEN BRASS'
+                  : '24dB/OCT 4-POLE CASCADE'
+                : '24dB/OCT RESONANT OTA'}
             </div>
           </div>
         );
@@ -1086,9 +1447,24 @@ export const HeraApp: React.FC = () => {
                 onSelectForLearn={() => handleSelectForLearn('VCADepth')}
                 onUnmap={() => handleUnmapParam('VCADepth')}
               />
+              {isJp8 && (
+                <Slider
+                  label="LFO"
+                  value={params.JP8VcaLfoDepth}
+                  onChange={(v) => handleParamChange('JP8VcaLfoDepth', v)}
+                  defaultValue={0}
+                  color="amber"
+                  isMidiLearnActive={isMidiLearnActive}
+                  isSelectedForLearn={selectedLearnParam === 'JP8VcaLfoDepth'}
+                  mappedCC={getMappedCC('JP8VcaLfoDepth')}
+                  channelLabel={getChannelLabelForParam('JP8VcaLfoDepth')}
+                  onSelectForLearn={() => handleSelectForLearn('JP8VcaLfoDepth')}
+                  onUnmap={() => handleUnmapParam('JP8VcaLfoDepth')}
+                />
+              )}
             </div>
             <div className="text-[7.5px] font-mono text-zinc-500 text-center tracking-wider pt-1 border-t border-zinc-800/80">
-              AMP
+              {isJp8 ? 'AMP + LFO AM' : 'AMP'}
             </div>
           </div>
         );
@@ -1102,11 +1478,85 @@ export const HeraApp: React.FC = () => {
             className={`flex-shrink-0 ${cardBgClass} border-t-4 border-t-amber-400 border border-zinc-800 rounded p-2 flex flex-col justify-between shadow-md`}
           >
             <div className="text-[10px] font-black font-mono tracking-widest text-amber-300 uppercase text-center pb-1 border-b border-zinc-800/80">
-              ENV (ADSR)
+              {isJp8 ? 'ENV-1 (MOD/SYNC) & ENV-2 (VCA/VCF)' : 'ENV (ADSR)'}
             </div>
             <div className="flex items-center justify-center gap-1.5 my-3 py-1">
+              {isJp8 && (
+                <>
+                  <div className="flex flex-col justify-center pr-1 border-r border-zinc-800/80">
+                    <ToggleSwitch
+                      label="ENV1 Pol"
+                      options={[
+                        { label: 'NRM', value: 0 },
+                        { label: 'INV', value: 1 },
+                      ]}
+                      value={params.JP8Env1Polarity >= 0.5 ? 1 : 0}
+                      onChange={(v) => handleParamChange('JP8Env1Polarity', v)}
+                      isMidiLearnActive={isMidiLearnActive}
+                      isSelectedForLearn={selectedLearnParam === 'JP8Env1Polarity'}
+                      mappedCC={getMappedCC('JP8Env1Polarity')}
+                      channelLabel={getChannelLabelForParam('JP8Env1Polarity')}
+                      onSelectForLearn={() => handleSelectForLearn('JP8Env1Polarity')}
+                      onUnmap={() => handleUnmapParam('JP8Env1Polarity')}
+                    />
+                  </div>
+                  <Slider
+                    label="A1"
+                    value={params.JP8Env1Attack}
+                    onChange={(v) => handleParamChange('JP8Env1Attack', v)}
+                    defaultValue={0.01}
+                    color="red"
+                    isMidiLearnActive={isMidiLearnActive}
+                    isSelectedForLearn={selectedLearnParam === 'JP8Env1Attack'}
+                    mappedCC={getMappedCC('JP8Env1Attack')}
+                    channelLabel={getChannelLabelForParam('JP8Env1Attack')}
+                    onSelectForLearn={() => handleSelectForLearn('JP8Env1Attack')}
+                    onUnmap={() => handleUnmapParam('JP8Env1Attack')}
+                  />
+                  <Slider
+                    label="D1"
+                    value={params.JP8Env1Decay}
+                    onChange={(v) => handleParamChange('JP8Env1Decay', v)}
+                    defaultValue={0.35}
+                    color="red"
+                    isMidiLearnActive={isMidiLearnActive}
+                    isSelectedForLearn={selectedLearnParam === 'JP8Env1Decay'}
+                    mappedCC={getMappedCC('JP8Env1Decay')}
+                    channelLabel={getChannelLabelForParam('JP8Env1Decay')}
+                    onSelectForLearn={() => handleSelectForLearn('JP8Env1Decay')}
+                    onUnmap={() => handleUnmapParam('JP8Env1Decay')}
+                  />
+                  <Slider
+                    label="S1"
+                    value={params.JP8Env1Sustain}
+                    onChange={(v) => handleParamChange('JP8Env1Sustain', v)}
+                    defaultValue={0.0}
+                    color="red"
+                    isMidiLearnActive={isMidiLearnActive}
+                    isSelectedForLearn={selectedLearnParam === 'JP8Env1Sustain'}
+                    mappedCC={getMappedCC('JP8Env1Sustain')}
+                    channelLabel={getChannelLabelForParam('JP8Env1Sustain')}
+                    onSelectForLearn={() => handleSelectForLearn('JP8Env1Sustain')}
+                    onUnmap={() => handleUnmapParam('JP8Env1Sustain')}
+                  />
+                  <Slider
+                    label="R1"
+                    value={params.JP8Env1Release}
+                    onChange={(v) => handleParamChange('JP8Env1Release', v)}
+                    defaultValue={0.25}
+                    color="red"
+                    isMidiLearnActive={isMidiLearnActive}
+                    isSelectedForLearn={selectedLearnParam === 'JP8Env1Release'}
+                    mappedCC={getMappedCC('JP8Env1Release')}
+                    channelLabel={getChannelLabelForParam('JP8Env1Release')}
+                    onSelectForLearn={() => handleSelectForLearn('JP8Env1Release')}
+                    onUnmap={() => handleUnmapParam('JP8Env1Release')}
+                  />
+                  <div className="w-[1px] h-24 bg-zinc-800 mx-0.5" />
+                </>
+              )}
               <Slider
-                label="A"
+                label={isJp8 ? 'A2' : 'A'}
                 value={params.ENVAttack}
                 onChange={(v) => handleParamChange('ENVAttack', v)}
                 defaultValue={0}
@@ -1119,7 +1569,7 @@ export const HeraApp: React.FC = () => {
                 onUnmap={() => handleUnmapParam('ENVAttack')}
               />
               <Slider
-                label="D"
+                label={isJp8 ? 'D2' : 'D'}
                 value={params.ENVDecay}
                 onChange={(v) => handleParamChange('ENVDecay', v)}
                 defaultValue={0}
@@ -1132,7 +1582,7 @@ export const HeraApp: React.FC = () => {
                 onUnmap={() => handleUnmapParam('ENVDecay')}
               />
               <Slider
-                label="S"
+                label={isJp8 ? 'S2' : 'S'}
                 value={params.ENVSustain}
                 onChange={(v) => handleParamChange('ENVSustain', v)}
                 defaultValue={1.0}
@@ -1145,7 +1595,7 @@ export const HeraApp: React.FC = () => {
                 onUnmap={() => handleUnmapParam('ENVSustain')}
               />
               <Slider
-                label="R"
+                label={isJp8 ? 'R2' : 'R'}
                 value={params.ENVRelease}
                 onChange={(v) => handleParamChange('ENVRelease', v)}
                 defaultValue={0}
@@ -1159,7 +1609,7 @@ export const HeraApp: React.FC = () => {
               />
             </div>
             <div className="text-[7.5px] font-mono text-zinc-500 text-center tracking-wider pt-1 border-t border-zinc-800/80">
-              EXPONENTIAL ADSR
+              {isJp8 ? 'DUAL ADSR ENVELOPES (ENV-1 & ENV-2)' : 'EXPONENTIAL ADSR'}
             </div>
           </div>
         );
@@ -1409,38 +1859,80 @@ export const HeraApp: React.FC = () => {
       {/* Outer Synthetic Chassis with Walnut Wood Cheeks */}
       <div className="flex-1 max-w-[1440px] w-full mx-auto my-0 sm:my-1.5 px-0.5 sm:px-2 pb-6">
         <div className="relative rounded-lg shadow-2xl border-2 sm:border-4 border-stone-800 bg-zinc-900 flex flex-col">
-          {/* Wood Cheeks Simulation (Left & Right Borders) */}
-          <div className="hidden lg:block absolute left-0 top-0 bottom-0 w-3 bg-gradient-to-r from-amber-950 via-amber-900 to-amber-950 border-r border-amber-900/60 z-30 pointer-events-none" />
-          <div className="hidden lg:block absolute right-0 top-0 bottom-0 w-3 bg-gradient-to-l from-amber-950 via-amber-900 to-amber-950 border-l border-amber-900/60 z-30 pointer-events-none" />
+          {/* Wood Cheeks (Juno-60) or Brushed Aluminum Side Cheeks (Jupiter-8) */}
+          {(params.SynthModel ?? 0) < 0.5 ? (
+            <>
+              <div className="hidden lg:block absolute left-0 top-0 bottom-0 w-3 bg-gradient-to-r from-amber-950 via-amber-900 to-amber-950 border-r border-amber-900/60 z-30 pointer-events-none" />
+              <div className="hidden lg:block absolute right-0 top-0 bottom-0 w-3 bg-gradient-to-l from-amber-950 via-amber-900 to-amber-950 border-l border-amber-900/60 z-30 pointer-events-none" />
+            </>
+          ) : (
+            <>
+              <div className="hidden lg:block absolute left-0 top-0 bottom-0 w-3 bg-gradient-to-r from-zinc-500 via-zinc-300 to-zinc-600 border-r border-zinc-400/80 z-30 pointer-events-none" />
+              <div className="hidden lg:block absolute right-0 top-0 bottom-0 w-3 bg-gradient-to-l from-zinc-500 via-zinc-300 to-zinc-600 border-l border-zinc-400/80 z-30 pointer-events-none" />
+            </>
+          )}
 
           {/* Top Roland Header Bar */}
           <div
             ref={topHeaderRef}
             className="bg-gradient-to-r from-zinc-950 via-zinc-900 to-zinc-950 px-2 sm:px-4 py-1 sm:py-1.5 border-b-2 border-zinc-700 flex flex-wrap items-center justify-between gap-2"
           >
-            {/* Branding / Badge */}
+            {/* Branding / Badge + Dual-Synth Selector */}
             <div className="flex items-center gap-2.5">
               <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-lg shadow-md border border-zinc-700/80 bg-zinc-950 p-0.5 flex items-center justify-center hover:scale-105 transition-transform overflow-hidden">
                 <AtariCartridgeIcon className="w-full h-full object-contain" />
               </div>
               <div className="flex flex-col">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-mono text-xl sm:text-2xl font-black tracking-widest text-zinc-100 drop-shadow">
                     HERA
                   </span>
-                  <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-red-600 text-white tracking-widest uppercase">
-                    JUNO-60
-                  </span>
+
+                  {/* Dual-Synth Hardware Engine Selector (JUNO-60 | JUPITER-8) */}
+                  <div className="inline-flex items-center bg-zinc-950 p-0.5 rounded border border-zinc-700 shadow-inner">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleParamChange('SynthModel', 0);
+                      }}
+                      title="Modo Roland Juno-60 (6 Vozes DCO + Chorus BBD)"
+                      className={`px-2 py-0.5 rounded text-[10px] font-mono font-black tracking-wider uppercase cursor-pointer transition-all ${
+                        (params.SynthModel ?? 0) < 0.5
+                          ? 'bg-red-600 text-white shadow-[0_0_10px_rgba(220,38,38,0.65)]'
+                          : 'text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      JUNO-60
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleParamChange('SynthModel', 1);
+                      }}
+                      title="Modo Roland Jupiter-8 (8 Vozes Dual VCO + X-Mod + Hard Sync + Dual ADSR + 12/24dB VCF)"
+                      className={`px-2 py-0.5 rounded text-[10px] font-mono font-black tracking-wider uppercase cursor-pointer transition-all ${
+                        (params.SynthModel ?? 0) >= 0.5
+                          ? 'bg-orange-500 text-black shadow-[0_0_10px_rgba(249,115,22,0.75)]'
+                          : 'text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      JUPITER-8
+                    </button>
+                  </div>
                 </div>
                 <span className="text-[9px] font-mono tracking-wider text-zinc-400">
-                  POLYPHONIC SYNTHESIZER • 6 VOICES • STEREO BBD CHORUS
+                  {(params.SynthModel ?? 0) >= 0.5
+                    ? 'DUAL VCO • 8 VOICES • X-MOD & HARD SYNC • 12/24dB VCF'
+                    : 'POLYPHONIC SYNTHESIZER • 6 VOICES • STEREO BBD CHORUS'}
                 </span>
               </div>
             </div>
 
             {/* Quick Status / Oscilloscope & Live Voices */}
             <div className="flex items-center gap-3">
-              <VoiceIndicator className="hidden sm:flex" />
+              <VoiceIndicator maxVoices={(params.SynthModel ?? 0) >= 0.5 ? 8 : 6} className="hidden sm:flex" />
 
               <div className="hidden md:block w-48">
                 <Oscilloscope />

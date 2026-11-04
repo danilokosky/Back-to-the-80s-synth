@@ -109,6 +109,8 @@ export const KEYS_CHANNEL_PARAMS: ReadonlySet<keyof HeraParameters> = new Set<ke
   'DCOSawLevel',    // VCO/DCO Saw Level
   'DCOSubLevel',    // VCO/DCO Sub Level
   'DCONoiseLevel',  // VCO/DCO Noise Level
+  'JP8Vco1Level',   // JP-8 VCO-1 Level
+  'JP8Vco2Level',   // JP-8 VCO-2 Level
 ]);
 
 export type MidiMappableAction =
@@ -126,9 +128,11 @@ export type MidiPresetChangeMode = 'program_change' | 'custom';
 export function getSectionForParam(param: keyof HeraParameters): MidiSectionId {
   switch (param) {
     case 'MasterVolume':
+    case 'SynthModel':
       return 'keys';
     case 'LFORate':
     case 'LFODelay':
+    case 'JP8LfoWave':
       return 'lfo';
     case 'DCORange':
     case 'LFOTrigMode':
@@ -139,6 +143,17 @@ export function getSectionForParam(param: keyof HeraParameters): MidiSectionId {
     case 'DCOSawLevel':
     case 'DCOSubLevel':
     case 'DCONoiseLevel':
+    case 'JP8VoiceMode':
+    case 'JP8Vco1Wave':
+    case 'JP8Vco2Wave':
+    case 'JP8Vco2Range':
+    case 'JP8Vco2Detune':
+    case 'JP8VcoSync':
+    case 'JP8CrossMod':
+    case 'JP8Vco1Level':
+    case 'JP8Vco2Level':
+    case 'JP8PitchEnvDepth':
+    case 'JP8PitchEnvTarget':
       return 'dco';
     case 'HPF':
       return 'hpf';
@@ -148,14 +163,22 @@ export function getSectionForParam(param: keyof HeraParameters): MidiSectionId {
     case 'VCFLFO':
     case 'VCFKey':
     case 'VCFBendDepth':
+    case 'JP8VcfSlope':
+    case 'JP8VcfEnvSource':
       return 'vcf';
     case 'VCAType':
     case 'VCADepth':
+    case 'JP8VcaLfoDepth':
       return 'vca';
     case 'ENVAttack':
     case 'ENVDecay':
     case 'ENVSustain':
     case 'ENVRelease':
+    case 'JP8Env1Attack':
+    case 'JP8Env1Decay':
+    case 'JP8Env1Sustain':
+    case 'JP8Env1Release':
+    case 'JP8Env1Polarity':
       return 'env';
     case 'ChorusI':
     case 'ChorusII':
@@ -1500,8 +1523,24 @@ export class MidiManager {
         for (const targetParam of strictMatchedParams) {
           let paramValue: number = normalized;
 
-          // Handle 3-position switches (0, 1, 2) and 2-position switches (0, 1)
-          if (targetParam === 'DCORange' || targetParam === 'DCOPWMMod') {
+          // Handle 4-position switches (0, 1, 2, 3), 3-position switches (0, 1, 2) and 2-position switches (0, 1)
+          if (
+            targetParam === 'JP8VoiceMode' ||
+            targetParam === 'JP8LfoWave' ||
+            targetParam === 'JP8Vco1Wave' ||
+            targetParam === 'JP8Vco2Range'
+          ) {
+            if (value <= 3) {
+              paramValue = Math.max(0, Math.min(3, value));
+            } else {
+              paramValue = Math.min(3, Math.floor((normalized * 3.99)));
+            }
+          } else if (
+            targetParam === 'DCORange' ||
+            targetParam === 'DCOPWMMod' ||
+            targetParam === 'JP8Vco2Wave' ||
+            targetParam === 'JP8PitchEnvTarget'
+          ) {
             if (value <= 0) {
               paramValue = 0;
             } else if (value === 1) {
@@ -1512,16 +1551,25 @@ export class MidiManager {
               paramValue = value < 64 ? 1 : 2;
             }
           } else if (
+            targetParam === 'SynthModel' ||
             targetParam === 'VCAType' ||
             targetParam === 'LFOTrigMode' ||
             targetParam === 'ReverbType' ||
             targetParam === 'ChorusI' ||
             targetParam === 'ChorusII' ||
             targetParam === 'DelayEnabled' ||
-            targetParam === 'ReverbEnabled'
+            targetParam === 'ReverbEnabled' ||
+            targetParam === 'JP8VcoSync' ||
+            targetParam === 'JP8VcfSlope' ||
+            targetParam === 'JP8VcfEnvSource' ||
+            targetParam === 'JP8Env1Polarity'
           ) {
             paramValue = value >= 1 ? 1 : 0;
-          } else if (targetParam === 'VCFEnv') {
+          } else if (
+            targetParam === 'VCFEnv' ||
+            targetParam === 'JP8Vco2Detune' ||
+            targetParam === 'JP8PitchEnvDepth'
+          ) {
             // Bipolar: -1.0 to 1.0 (0..100 CC -> -1.0..1.0, >100 clamped to 1.0)
             paramValue = normalized * 2 - 1;
           }

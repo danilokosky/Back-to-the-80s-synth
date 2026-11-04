@@ -900,18 +900,39 @@ class MidiControllerManager(
 
     private fun computeParamValueFromCC(param: SynthParam, ccValue: Int): Float {
         // User specification:
-        // - 3-position switches (DCORange, DCOPWMMod): discrete values 0 -> 0f, 1 -> 1f, 2 -> 2f (fallback < 64 -> 1f, >= 64 -> 2f)
+        // - 4-position switches (JP8VoiceMode, JP8LfoWave, JP8Vco1Wave, JP8Vco2Wave, JP8Vco2Range)
+        // - 3-position switches (DCORange, DCOPWMMod, JP8PitchEnvTarget): discrete values 0 -> 0f, 1 -> 1f, 2 -> 2f
         // - 2-position switches/toggles: 0 = OFF (0f), >= 1 = ON (1f)
         // - Continuous Fader: 0..100 mapped directly to 0.0..1.0, values > 100 clamped to 100 (1.0f)
         return when (param) {
+            SynthParam.JP8VoiceMode,
+            SynthParam.JP8LfoWave,
+            SynthParam.JP8Vco1Wave,
+            SynthParam.JP8Vco2Wave,
+            SynthParam.JP8Vco2Range -> when {
+                ccValue <= 0 -> 0f
+                ccValue == 1 -> 1f
+                ccValue == 2 -> 2f
+                ccValue == 3 -> 3f
+                ccValue < 32 -> 0f
+                ccValue < 64 -> 1f
+                ccValue < 96 -> 2f
+                else -> 3f
+            }
             SynthParam.DCORange,
-            SynthParam.DCOPWMMod -> when {
+            SynthParam.DCOPWMMod,
+            SynthParam.JP8PitchEnvTarget -> when {
                 ccValue <= 0 -> 0f
                 ccValue == 1 -> 1f
                 ccValue == 2 -> 2f
                 ccValue < 64 -> 1f
                 else -> 2f
             }
+            SynthParam.SynthModel,
+            SynthParam.JP8VcoSync,
+            SynthParam.JP8VcfSlope,
+            SynthParam.JP8VcfEnvSource,
+            SynthParam.JP8Env1Polarity,
             SynthParam.VCAType,
             SynthParam.LFOTrigMode,
             SynthParam.LFOManualTrig,
@@ -920,6 +941,11 @@ class MidiControllerManager(
             SynthParam.DelayEnabled,
             SynthParam.ReverbEnabled,
             SynthParam.ReverbType -> if (ccValue >= 1) 1f else 0f
+            SynthParam.JP8Vco2Detune,
+            SynthParam.JP8PitchEnvDepth -> {
+                val norm = (min(100, ccValue.coerceAtLeast(0)) / 100f).coerceIn(0f, 1f)
+                (norm * 2f - 1f).coerceIn(-1f, 1f)
+            }
             else -> (min(100, ccValue.coerceAtLeast(0)) / 100f).coerceIn(0f, 1f)
         }
     }

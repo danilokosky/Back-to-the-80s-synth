@@ -12,7 +12,7 @@ namespace hera {
 
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kTwoPi = 6.28318530717958647692f;
-constexpr int kMaxVoices = 6;
+constexpr int kMaxVoices = 8;
 constexpr int kWaveformBufferSize = 512;
 constexpr uint32_t kEventQueueSize = 512;
 constexpr uint32_t kEventQueueMask = kEventQueueSize - 1;
@@ -55,7 +55,29 @@ enum ParamId : int {
     ReverbDecay = 34,      // 0..1
     ReverbMix = 35,        // 0..1
     MasterVolume = 36,     // 0..1
-    ParamCount = 37
+    // 37..41 reserved for Kotlin UI actions (PresetPrev, PresetNext, PresetSelect, PitchWheel, ModWheel)
+    SynthModel = 42,       // 0 = Juno-60, 1 = Jupiter-8
+    JP8VoiceMode = 43,     // 0 = Poly 1, 1 = Poly 2, 2 = Unison, 3 = Solo
+    JP8LfoWave = 44,       // 0 = Sine, 1 = Tri, 2 = Saw, 3 = Square
+    JP8Vco1Wave = 45,      // 0 = Tri, 1 = Saw, 2 = Pulse, 3 = Square
+    JP8Vco2Wave = 46,      // 0 = Saw, 1 = Pulse, 2 = Sine
+    JP8Vco2Range = 47,     // 0 = -1 Oct, 1 = 0 Oct, 2 = +1 Oct, 3 = +5th
+    JP8Vco2Detune = 48,    // -1..+1 (-50..+50 cents)
+    JP8VcoSync = 49,       // 0 or 1
+    JP8CrossMod = 50,      // 0..1
+    JP8Vco1Level = 51,     // 0..1
+    JP8Vco2Level = 52,     // 0..1
+    JP8PitchEnvDepth = 53, // -1..+1
+    JP8PitchEnvTarget = 54,// 0 = VCO-2, 1 = VCO-1, 2 = Both
+    JP8VcfSlope = 55,      // 0 = 24dB, 1 = 12dB
+    JP8VcfEnvSource = 56,  // 0 = ENV-2, 1 = ENV-1
+    JP8VcaLfoDepth = 57,   // 0..1
+    JP8Env1Attack = 58,    // 0..1
+    JP8Env1Decay = 59,     // 0..1
+    JP8Env1Sustain = 60,   // 0..1
+    JP8Env1Release = 61,   // 0..1
+    JP8Env1Polarity = 62,  // 0 = Normal, 1 = Invert
+    ParamCount = 63
 };
 
 inline float clampf(float v, float lo, float hi) {
@@ -160,18 +182,26 @@ struct JunoVoice {
     int note = -1;
     uint64_t startOrder = 0;
     float velocityFactor = 1.0f;
+    float unisonDetuneCents = 0.0f;
+    float unisonGainScale = 1.0f;
 
-    // Continuously running oscillator state (never reset -> zero phase clicks)
+    // Continuously running oscillator state (never reset unless Hard Sync -> zero phase clicks)
     float phase = 0.0f;
+    float vco2Phase = 0.25f;
+    float vco2Out = 0.0f;
     bool subFlip = false;
     float currentFreqHz = 440.0f;
 
-    // Amplitude & Filter RC Envelopes matching v1.1 Stable
+    // Amplitude & Filter RC Envelopes (ENV-2 in Jupiter-8, ENV in Juno-60)
     EnvStage envStage = EnvStage::Idle;
     float envLevel = 0.0f;
     float vcfEnvLevel = 0.0f;
     float gateEnvLevel = 0.0f;
     float lfoDelayEnv = 1.0f;
+
+    // Dedicated Jupiter-8 ENV-1 (Modulates VCO Pitch, Hard Sync Sweeps, PWM, or VCF)
+    EnvStage env1Stage = EnvStage::Idle;
+    float env1Level = 0.0f;
 
     // 4-pole cascaded lowpass state (never zeroed while ringing -> Warm Retrigger)
     float z1 = 0.0f;
@@ -179,13 +209,23 @@ struct JunoVoice {
     float z3 = 0.0f;
     float z4 = 0.0f;
 
-    void startVoice(int midiNote, float vel, uint64_t orderCounter, float rangeFactor, float initialLfoEnv) {
+    void startVoice(
+        int midiNote,
+        float vel,
+        uint64_t orderCounter,
+        float rangeFactor,
+        float initialLfoEnv,
+        float detuneCents = 0.0f,
+        float gainScale = 1.0f
+    ) {
         bool wasActive = active;
         note = midiNote;
         startOrder = orderCounter;
         active = true;
         released = false;
         sameNoteDamped = false;
+        unisonDetuneCents = detuneCents;
+        unisonGainScale = gainScale;
 
         // Linear & musical velocity scaling matching v1.1 Stable (0.45 + 0.55 * vel)
         float normVel = (vel > 1.0f) ? (vel / 127.0f) : vel;
@@ -199,15 +239,18 @@ struct JunoVoice {
         // Warm Capacitor Retrigger: rise from current envLevel / vcfEnvLevel without ever jumping to 0
         envLevel = std::max(0.0f, envLevel);
         vcfEnvLevel = std::max(0.0f, vcfEnvLevel);
+        env1Level = std::max(0.0f, env1Level);
         gateEnvLevel = std::max(0.0f, gateEnvLevel);
         lfoDelayEnv = wasActive ? std::max(lfoDelayEnv, initialLfoEnv) : initialLfoEnv;
         envStage = EnvStage::Attack;
+        env1Stage = EnvStage::Attack;
     }
 
     void stopVoice() {
         if (!active || released) return;
         released = true;
         envStage = EnvStage::Release;
+        env1Stage = EnvStage::Release;
     }
 
     // Matching v1.1 Stable softenSameNoteRelease() (16ms RC decay when another Round-Robin voice plays same note)
@@ -216,12 +259,14 @@ struct JunoVoice {
         sameNoteDamped = true;
         released = true;
         envStage = EnvStage::Release;
+        env1Stage = EnvStage::Release;
     }
 
     void stopImmediate() {
         released = true;
         sameNoteDamped = true;
         envStage = EnvStage::Release;
+        env1Stage = EnvStage::Release;
     }
 };
 
@@ -372,6 +417,29 @@ public:
         setParameter(ReverbMix, 0.25f);
         setParameter(MasterVolume, 0.85f);
 
+        // Jupiter-8 Defaults
+        setParameter(SynthModel, 0.0f);        // 0 = Juno-60, 1 = Jupiter-8
+        setParameter(JP8VoiceMode, 0.0f);      // 0 = Poly 1
+        setParameter(JP8LfoWave, 0.0f);        // 0 = Sine
+        setParameter(JP8Vco1Wave, 1.0f);       // 1 = Saw
+        setParameter(JP8Vco2Wave, 0.0f);       // 0 = Saw
+        setParameter(JP8Vco2Range, 1.0f);      // 1 = 0 Oct
+        setParameter(JP8Vco2Detune, 0.14f);
+        setParameter(JP8VcoSync, 0.0f);
+        setParameter(JP8CrossMod, 0.0f);
+        setParameter(JP8Vco1Level, 0.90f);
+        setParameter(JP8Vco2Level, 0.75f);
+        setParameter(JP8PitchEnvDepth, 0.0f);
+        setParameter(JP8PitchEnvTarget, 0.0f);
+        setParameter(JP8VcfSlope, 0.0f);       // 0 = 24dB, 1 = 12dB
+        setParameter(JP8VcfEnvSource, 0.0f);   // 0 = ENV-2
+        setParameter(JP8VcaLfoDepth, 0.0f);
+        setParameter(JP8Env1Attack, 0.01f);
+        setParameter(JP8Env1Decay, 0.35f);
+        setParameter(JP8Env1Sustain, 0.0f);
+        setParameter(JP8Env1Release, 0.25f);
+        setParameter(JP8Env1Polarity, 0.0f);
+
         for (int i = 0; i < ParamCount; ++i) {
             smoothedParams_[i] = targetParams_[i].load(std::memory_order_relaxed);
         }
@@ -482,6 +550,21 @@ public:
         const float freqGlideCoef = 1.0f - std::exp(-invSr / 0.0012f); // 1.2ms micro-glide on DCO pitch
 
         // Snapshot discrete switches & non-audio-rate targets
+        const bool isJp8 = targetParams_[SynthModel].load(std::memory_order_relaxed) >= 0.5f;
+        const int jp8VoiceMode = isJp8 ? static_cast<int>(std::round(targetParams_[JP8VoiceMode].load(std::memory_order_relaxed))) : 0;
+        const int jp8LfoWave = isJp8 ? static_cast<int>(std::round(targetParams_[JP8LfoWave].load(std::memory_order_relaxed))) : 0;
+        const int jp8Vco1Wave = static_cast<int>(std::round(targetParams_[JP8Vco1Wave].load(std::memory_order_relaxed)));
+        const int jp8Vco2Wave = static_cast<int>(std::round(targetParams_[JP8Vco2Wave].load(std::memory_order_relaxed)));
+        const int jp8Vco2Range = static_cast<int>(std::round(targetParams_[JP8Vco2Range].load(std::memory_order_relaxed)));
+        const bool jp8VcoSync = isJp8 && (targetParams_[JP8VcoSync].load(std::memory_order_relaxed) >= 0.5f);
+        const int jp8PitchEnvTarget = static_cast<int>(std::round(targetParams_[JP8PitchEnvTarget].load(std::memory_order_relaxed)));
+        const bool jp8Vcf12dB = isJp8 && (targetParams_[JP8VcfSlope].load(std::memory_order_relaxed) >= 0.5f);
+        const bool jp8VcfUseEnv1 = isJp8 && (targetParams_[JP8VcfEnvSource].load(std::memory_order_relaxed) >= 0.5f);
+        const float jp8Env1Pol = (targetParams_[JP8Env1Polarity].load(std::memory_order_relaxed) >= 0.5f) ? -1.0f : 1.0f;
+
+        const float vco2RangeMult = (jp8Vco2Range == 0) ? 0.5f : ((jp8Vco2Range == 2) ? 2.0f : ((jp8Vco2Range == 3) ? 1.498307f : 1.0f));
+        const float activeGlideCoef = (isJp8 && jp8VoiceMode == 3) ? (1.0f - std::exp(-invSr / 0.028f)) : freqGlideCoef;
+
         const float rangeFactor = HeraTables::getRangeFactor(targetParams_[DCORange].load(std::memory_order_relaxed));
         const int pwmMod = static_cast<int>(std::round(targetParams_[DCOPWMMod].load(std::memory_order_relaxed)));
         const int vcaType = static_cast<int>(std::round(targetParams_[VCAType].load(std::memory_order_relaxed)));
@@ -501,6 +584,17 @@ public:
         const float attackCoef = std::exp(-invSr / std::max(0.001f, attackSec * 0.35f));
         const float decayCoef = std::exp(-invSr / std::max(0.002f, decaySec * 0.33f));
         const float releaseCoef = std::exp(-invSr / std::max(0.005f, releaseSec * 0.25f));
+
+        // Dedicated Jupiter-8 ENV-1 RC time constants
+        const float env1AttackSec = HeraTables::getAttackSec(targetParams_[JP8Env1Attack].load(std::memory_order_relaxed));
+        const float env1DecaySec = HeraTables::getDecaySec(targetParams_[JP8Env1Decay].load(std::memory_order_relaxed));
+        const float env1SustainLevel = clampf(targetParams_[JP8Env1Sustain].load(std::memory_order_relaxed), 0.0f, 1.0f);
+        const float env1ReleaseSec = HeraTables::getReleaseSec(targetParams_[JP8Env1Release].load(std::memory_order_relaxed));
+
+        const float env1AttackCoef = std::exp(-invSr / std::max(0.001f, env1AttackSec * 0.35f));
+        const float env1DecayCoef = std::exp(-invSr / std::max(0.002f, env1DecaySec * 0.33f));
+        const float env1ReleaseCoef = std::exp(-invSr / std::max(0.005f, env1ReleaseSec * 0.25f));
+
         const float sameNoteDampCoef = std::exp(-invSr / 0.016f); // v1.1 softenSameNoteRelease 16ms RC
         const float gateAttackCoef = std::exp(-invSr / 0.0025f);  // v1.1 2.5ms RC gate attack
         const float gateReleaseCoef = std::exp(-invSr / 0.0040f); // v1.1 4.0ms RC gate release
@@ -562,6 +656,13 @@ public:
             smoothedParams_[DelayMix] += medSmooth * (targetParams_[DelayMix].load(std::memory_order_relaxed) - smoothedParams_[DelayMix]);
             smoothedParams_[MasterVolume] += medSmooth * (targetParams_[MasterVolume].load(std::memory_order_relaxed) - smoothedParams_[MasterVolume]);
 
+            smoothedParams_[JP8Vco2Detune] += fastSmooth * (targetParams_[JP8Vco2Detune].load(std::memory_order_relaxed) - smoothedParams_[JP8Vco2Detune]);
+            smoothedParams_[JP8CrossMod] += fastSmooth * (targetParams_[JP8CrossMod].load(std::memory_order_relaxed) - smoothedParams_[JP8CrossMod]);
+            smoothedParams_[JP8Vco1Level] += fastSmooth * (targetParams_[JP8Vco1Level].load(std::memory_order_relaxed) - smoothedParams_[JP8Vco1Level]);
+            smoothedParams_[JP8Vco2Level] += fastSmooth * (targetParams_[JP8Vco2Level].load(std::memory_order_relaxed) - smoothedParams_[JP8Vco2Level]);
+            smoothedParams_[JP8PitchEnvDepth] += fastSmooth * (targetParams_[JP8PitchEnvDepth].load(std::memory_order_relaxed) - smoothedParams_[JP8PitchEnvDepth]);
+            smoothedParams_[JP8VcaLfoDepth] += fastSmooth * (targetParams_[JP8VcaLfoDepth].load(std::memory_order_relaxed) - smoothedParams_[JP8VcaLfoDepth]);
+
             smoothPitchBendSemis_ += fastSmooth * (targetPitchBendSemis_.load(std::memory_order_relaxed) - smoothPitchBendSemis_);
             smoothModWheel_ += fastSmooth * (targetModWheel_.load(std::memory_order_relaxed) - smoothModWheel_);
 
@@ -593,10 +694,19 @@ public:
                 arpGateReleased_ = false;
             }
 
-            // 2. Global Sine LFO (matching v1.1 globalLfoOsc.type = 'sine')
+            // 2. Global LFO (Sine in Juno-60; Sine / Tri / Saw / Square in Jupiter-8)
             lfoPhase_ += lfoRateHz * invSr;
             if (lfoPhase_ >= 1.0f) lfoPhase_ -= 1.0f;
-            const float lfoSine = std::sin(lfoPhase_ * kTwoPi);
+            float lfoWaveOut = std::sin(lfoPhase_ * kTwoPi);
+            if (isJp8) {
+                if (jp8LfoWave == 1) {
+                    lfoWaveOut = 1.0f - 4.0f * std::fabs(lfoPhase_ - 0.5f);
+                } else if (jp8LfoWave == 2) {
+                    lfoWaveOut = 1.0f - 2.0f * lfoPhase_;
+                } else if (jp8LfoWave == 3) {
+                    lfoWaveOut = (lfoPhase_ < 0.5f) ? 1.0f : -1.0f;
+                }
+            }
 
             // 3. Paul Kellet Warm Pink Noise Generator (matching v1.1 Stable lines 673-684)
             noiseSeed_ = noiseSeed_ * 196314165u + 907633515u;
@@ -610,11 +720,18 @@ public:
             const float pinkNoise = (pinkB0_ + pinkB1_ + pinkB2_ + pinkB3_ + pinkB4_ + pinkB5_ + pinkB6_ + white * 0.5362f) * 0.11f;
             pinkB6_ = white * 0.115926f;
 
-            // Pre-filter DCO mix levels matching v1.1 Stable (0.24 / 0.24 / 0.18 / 0.12)
+            // Pre-filter DCO/VCO mix levels
             const float sawGain = clampf(smoothedParams_[DCOSawLevel], 0.0f, 1.0f) * 0.24f;
             const float pulseGain = clampf(smoothedParams_[DCOPulseLevel], 0.0f, 1.0f) * 0.24f;
             const float subGain = clampf(smoothedParams_[DCOSubLevel], 0.0f, 1.0f) * 0.18f;
             const float noiseGain = clampf(smoothedParams_[DCONoiseLevel], 0.0f, 1.0f) * 0.12f;
+
+            const float jp8Vco1Gain = clampf(smoothedParams_[JP8Vco1Level], 0.0f, 1.0f) * 0.22f;
+            const float jp8Vco2Gain = clampf(smoothedParams_[JP8Vco2Level], 0.0f, 1.0f) * 0.22f;
+            const float jp8CrossModAmt = clampf(smoothedParams_[JP8CrossMod], 0.0f, 1.0f);
+            const float jp8DetuneCents = clampf(smoothedParams_[JP8Vco2Detune], -1.0f, 1.0f) * 50.0f;
+            const float jp8PitchEnvSemis = clampf(smoothedParams_[JP8PitchEnvDepth], -1.0f, 1.0f) * 24.0f * jp8Env1Pol;
+            const float jp8VcaLfoAmt = isJp8 ? clampf(smoothedParams_[JP8VcaLfoDepth], 0.0f, 1.0f) : 0.0f;
 
             const float pwmDepth = clampf(smoothedParams_[DCOPWMDepth], 0.0f, 1.0f);
             const float pitchModDepth = clampf(smoothedParams_[DCOPitchModDepth], 0.0f, 1.0f);
@@ -632,15 +749,15 @@ public:
 
             float voiceSum = 0.0f;
 
-            // 4. Synthesize 6 Polyphonic Voices
+            // 4. Synthesize Polyphonic Voices (6 in Juno-60, 8 in Jupiter-8)
             for (int v = 0; v < kMaxVoices; ++v) {
                 JunoVoice& voice = voices_[v];
                 if (!voice.active) continue;
 
-                const float envPeak = voice.velocityFactor;
+                const float envPeak = voice.velocityFactor * voice.unisonGainScale;
                 const float voiceSustainTarget = sustainLevel * envPeak;
 
-                // Continuous RC Capacitor ADSR Envelope matching v1.1 Stable (lines 243-255 & 474-487)
+                // Continuous RC Capacitor ADSR Envelope (ENV-2 / Juno ENV)
                 switch (voice.envStage) {
                     case EnvStage::Attack: {
                         if (sustainLevel >= 0.99f) {
@@ -699,6 +816,47 @@ public:
                         break;
                 }
 
+                // Dedicated Jupiter-8 ENV-1 ADSR
+                if (isJp8) {
+                    switch (voice.env1Stage) {
+                        case EnvStage::Attack: {
+                            voice.env1Level = 1.04f + (voice.env1Level - 1.04f) * env1AttackCoef;
+                            if (voice.env1Level >= 1.0f) {
+                                voice.env1Level = 1.0f;
+                                voice.env1Stage = (env1SustainLevel >= 0.99f) ? EnvStage::Sustain : EnvStage::Decay;
+                            }
+                            break;
+                        }
+                        case EnvStage::Decay: {
+                            voice.env1Level = env1SustainLevel + (voice.env1Level - env1SustainLevel) * env1DecayCoef;
+                            if (std::fabs(voice.env1Level - env1SustainLevel) < 0.0005f) {
+                                voice.env1Level = env1SustainLevel;
+                                voice.env1Stage = EnvStage::Sustain;
+                            }
+                            break;
+                        }
+                        case EnvStage::Sustain: {
+                            voice.env1Level = env1SustainLevel + (voice.env1Level - env1SustainLevel) * medSmooth;
+                            if (voice.released) {
+                                voice.env1Stage = EnvStage::Release;
+                            }
+                            break;
+                        }
+                        case EnvStage::Release: {
+                            voice.env1Level *= env1ReleaseCoef;
+                            if (voice.env1Level < 0.00015f) {
+                                voice.env1Level = 0.0f;
+                                voice.env1Stage = EnvStage::Idle;
+                            }
+                            break;
+                        }
+                        case EnvStage::Idle:
+                        default:
+                            voice.env1Level = 0.0f;
+                            break;
+                    }
+                }
+
                 // Gate mode envelope (2.5ms RC attack, 4.0ms RC release matching v1.1)
                 if (!voice.released) {
                     voice.gateEnvLevel = envPeak + (voice.gateEnvLevel - envPeak) * gateAttackCoef;
@@ -725,37 +883,80 @@ public:
                 const float voiceLfoEnv = clampf(voice.lfoDelayEnv, 0.20f, 1.0f);
                 const float dcoPitchCents = HeraTables::getDcoLfoPitchCents(pitchModDepth);
                 const float modWheelCents = HeraTables::getDcoLfoPitchCents(smoothModWheel_);
-                const float pitchLfoCents = lfoSine * ((dcoPitchCents * voiceLfoEnv) + modWheelCents);
-                const float filterLfoCents = lfoSine * (vcfLfoNorm * 2600.0f * std::max(voiceLfoEnv, smoothModWheel_));
+                const float pitchLfoCents = lfoWaveOut * ((dcoPitchCents * voiceLfoEnv) + modWheelCents);
+                const float filterLfoCents = lfoWaveOut * (vcfLfoNorm * 2600.0f * std::max(voiceLfoEnv, smoothModWheel_));
 
-                // Target DCO frequency with 1.2ms micro-glide (matching v1.1 setTargetAtTime(..., 0.0012))
+                // Target DCO/VCO frequency with micro-glide (or Solo legato portamento)
                 float noteTargetHz = 440.0f * std::pow(2.0f, (static_cast<float>(voice.note) - 69.0f) / 12.0f) * rangeFactor;
-                voice.currentFreqHz += freqGlideCoef * (noteTargetHz - voice.currentFreqHz);
+                voice.currentFreqHz += activeGlideCoef * (noteTargetHz - voice.currentFreqHz);
 
-                float detuneRatio = std::pow(2.0f, (smoothPitchBendSemis_ * 100.0f + pitchLfoCents) / 1200.0f);
-                float freq = clampf(voice.currentFreqHz * detuneRatio, 16.0f, sr * 0.45f);
+                float baseCentsOffset = smoothPitchBendSemis_ * 100.0f + pitchLfoCents + voice.unisonDetuneCents;
+                float env1PitchCents = isJp8 ? (voice.env1Level * jp8PitchEnvSemis * 100.0f) : 0.0f;
+                float vco1PitchEnvCents = (jp8PitchEnvTarget == 1 || jp8PitchEnvTarget == 2) ? env1PitchCents : 0.0f;
+                float vco2PitchEnvCents = (jp8PitchEnvTarget == 0 || jp8PitchEnvTarget == 2) ? env1PitchCents : 0.0f;
+
+                float pwModSource = 0.0f;
+                if (pwmMod == 0) {
+                    pwModSource = pwmDepth;
+                } else if (pwmMod == 1) {
+                    pwModSource = (lfoWaveOut * 0.5f + 0.5f) * pwmDepth;
+                } else {
+                    pwModSource = (isJp8 ? voice.env1Level : voice.vcfEnvLevel) * pwmDepth;
+                }
+                float pw = clampf(0.5f - 0.45f * pwModSource, 0.05f, 0.95f);
+
+                // Synthesize VCO-2 first in Jupiter-8 mode so it can Cross-Modulate (FM) and Hard-Sync VCO-1!
+                bool vco2Wrapped = false;
+                float dt2 = 0.0f;
+                if (isJp8) {
+                    float vco2DetuneRatio = std::pow(2.0f, (baseCentsOffset + jp8DetuneCents + vco2PitchEnvCents) / 1200.0f);
+                    float vco2Freq = clampf(voice.currentFreqHz * vco2RangeMult * vco2DetuneRatio, 8.0f, sr * 0.45f);
+                    dt2 = vco2Freq * invSr;
+                    voice.vco2Phase += dt2;
+                    if (voice.vco2Phase >= 1.0f) {
+                        voice.vco2Phase -= 1.0f;
+                        vco2Wrapped = true;
+                    }
+
+                    if (jp8Vco2Wave == 0) {
+                        // PolyBLEP Sawtooth
+                        voice.vco2Out = (2.0f * voice.vco2Phase - 1.0f) - polyBlep(voice.vco2Phase, dt2);
+                    } else if (jp8Vco2Wave == 1) {
+                        // PolyBLEP Pulse (PWM)
+                        float p2 = (voice.vco2Phase < pw) ? 1.0f : -1.0f;
+                        p2 += polyBlep(voice.vco2Phase, dt2);
+                        float ph2 = voice.vco2Phase - pw;
+                        if (ph2 < 0.0f) ph2 += 1.0f;
+                        p2 -= polyBlep(ph2, dt2);
+                        voice.vco2Out = p2;
+                    } else {
+                        // Pure Sine
+                        voice.vco2Out = std::sin(voice.vco2Phase * kTwoPi);
+                    }
+                }
+
+                // VCO-1 / Juno DCO frequency (with Jupiter-8 Audio-Rate FM Cross-Mod from VCO-2)
+                float vco1DetuneRatio = std::pow(2.0f, (baseCentsOffset + vco1PitchEnvCents) / 1200.0f);
+                float xModMult = isJp8 ? (1.0f + jp8CrossModAmt * 1.55f * voice.vco2Out) : 1.0f;
+                float freq = clampf(voice.currentFreqHz * vco1DetuneRatio * std::max(0.05f, xModMult), 16.0f, sr * 0.45f);
                 float dt = freq * invSr;
 
-                voice.phase += dt;
-                if (voice.phase >= 1.0f) {
-                    voice.phase -= 1.0f;
-                    voice.subFlip = !voice.subFlip;
+                if (jp8VcoSync && vco2Wrapped && dt2 > 0.000001f) {
+                    // Authentic Hard Sync: reset VCO-1 phase to exact subsample position of VCO-2 wrap
+                    float subsampleFrac = voice.vco2Phase / dt2;
+                    voice.phase = std::fmod(subsampleFrac * dt, 1.0f);
+                } else {
+                    voice.phase += dt;
+                    if (voice.phase >= 1.0f) {
+                        voice.phase -= 1.0f;
+                        voice.subFlip = !voice.subFlip;
+                    }
                 }
 
                 // PolyBLEP Sawtooth
                 float saw = (2.0f * voice.phase - 1.0f) - polyBlep(voice.phase, dt);
 
                 // PolyBLEP Pulse with PWM
-                float pwModSource = 0.0f;
-                if (pwmMod == 0) {
-                    pwModSource = pwmDepth;
-                } else if (pwmMod == 1) {
-                    pwModSource = (lfoSine * 0.5f + 0.5f) * pwmDepth;
-                } else {
-                    pwModSource = voice.vcfEnvLevel * pwmDepth;
-                }
-                float pw = clampf(0.5f - 0.45f * pwModSource, 0.05f, 0.95f);
-
                 float pulse = (voice.phase < pw) ? 1.0f : -1.0f;
                 pulse += polyBlep(voice.phase, dt);
                 float phase2 = voice.phase - pw;
@@ -765,15 +966,40 @@ public:
                 // Sub-Oscillator (-1 octave square)
                 float sub = voice.subFlip ? 1.0f : -1.0f;
 
-                float dcoMix = saw * sawGain
-                             + pulse * pulseGain
-                             + sub * subGain
-                             + pinkNoise * noiseGain;
+                float dcoMix = 0.0f;
+                if (!isJp8) {
+                    dcoMix = saw * sawGain
+                           + pulse * pulseGain
+                           + sub * subGain
+                           + pinkNoise * noiseGain;
+                } else {
+                    float vco1Sig = saw;
+                    if (jp8Vco1Wave == 0) {
+                        // Triangle
+                        vco1Sig = 1.0f - 4.0f * std::fabs(voice.phase - 0.5f);
+                    } else if (jp8Vco1Wave == 2) {
+                        // Pulse (PWM)
+                        vco1Sig = pulse;
+                    } else if (jp8Vco1Wave == 3) {
+                        // Square (50% duty)
+                        float sq = (voice.phase < 0.5f) ? 1.0f : -1.0f;
+                        sq += polyBlep(voice.phase, dt);
+                        float sqPh2 = voice.phase - 0.5f;
+                        if (sqPh2 < 0.0f) sqPh2 += 1.0f;
+                        sq -= polyBlep(sqPh2, dt);
+                        vco1Sig = sq;
+                    }
+                    dcoMix = vco1Sig * jp8Vco1Gain
+                           + voice.vco2Out * jp8Vco2Gain
+                           + sub * subGain
+                           + pinkNoise * noiseGain;
+                }
 
-                // 4-Pole Cascaded VCF matching v1.1 Stable frequency equations (lines 363-383)
+                // 2-Pole (12dB/oct) / 4-Pole (24dB/oct) Cascaded VCF
                 float keyTrackingRatio = std::pow(2.0f, vcfKeyNorm * ((static_cast<float>(voice.note) - 60.0f) / 12.0f));
                 float bendRatio = std::pow(2.0f, vcfBendNorm * (smoothPitchBendSemis_ / 12.0f));
-                float envOctaves = vcfEnvNorm * 6.5f * voice.vcfEnvLevel;
+                float activeVcfEnv = jp8VcfUseEnv1 ? (voice.env1Level * jp8Env1Pol) : voice.vcfEnvLevel;
+                float envOctaves = vcfEnvNorm * 6.5f * activeVcfEnv;
                 float lfoOctaves = filterLfoCents / 1200.0f;
 
                 float cutFreq = baseCutoffHz * keyTrackingRatio * bendRatio * std::pow(2.0f, envOctaves + lfoOctaves);
@@ -790,7 +1016,9 @@ public:
                 voice.z3 += G * (voice.z2 - voice.z3);
                 voice.z4 += G * (voice.z3 - voice.z4);
 
-                float voiceOut = voice.z4 * ampEnv * vcaLevel;
+                float filterOut = jp8Vcf12dB ? (voice.z2 * 1.08f) : voice.z4;
+                float vcaLfoMod = 1.0f + jp8VcaLfoAmt * 0.45f * lfoWaveOut * voiceLfoEnv;
+                float voiceOut = filterOut * ampEnv * vcaLevel * std::max(0.0f, vcaLfoMod);
                 voiceSum += voiceOut;
             }
 
@@ -1068,51 +1296,95 @@ private:
         }
     }
 
-    // Authentic 6-Voice Round-Robin + Warm Analog Retrigger + softenSameNoteRelease matching v1.1 Stable (lines 1326-1372)
+    // Authentic 6-Voice (Juno-60) / 8-Voice (Jupiter-8 Poly1/Poly2/Unison/Solo) Round-Robin + Warm Analog Retrigger
     void triggerVoiceOn(int midiNote, float velocity) {
+        const bool isJp8 = targetParams_[SynthModel].load(std::memory_order_relaxed) >= 0.5f;
+        const int activeVoiceLimit = isJp8 ? 8 : 6;
+        const int voiceMode = isJp8 ? static_cast<int>(std::round(targetParams_[JP8VoiceMode].load(std::memory_order_relaxed))) : 0;
+        const float rangeFactor = HeraTables::getRangeFactor(targetParams_[DCORange].load(std::memory_order_relaxed));
+        const float lfoDelaySec = HeraTables::getLfoDelaySec(targetParams_[LFODelay].load(std::memory_order_relaxed));
+
+        // JUPITER-8 UNISON MODE (4-voice fat analog stack with detune spread)
+        if (isJp8 && voiceMode == 2) {
+            const float detuneSpread[4] = { -14.0f, -4.5f, 4.5f, 14.0f };
+            float maxLfo = arpEnabled_ ? 1.0f : 0.20f;
+            for (int i = 0; i < 4; ++i) {
+                if (voices_[i].active) maxLfo = std::max(maxLfo, voices_[i].lfoDelayEnv);
+            }
+            const float initLfo = (lfoDelaySec < 0.02f) ? 1.0f : maxLfo;
+            for (int i = 0; i < 4; ++i) {
+                noteOrderCounter_++;
+                voices_[i].startVoice(midiNote, velocity, noteOrderCounter_, rangeFactor, initLfo, detuneSpread[i], 0.56f);
+            }
+            return;
+        }
+
+        // JUPITER-8 SOLO MODE (Monophonic lead on voice 0 with legato portamento)
+        if (isJp8 && voiceMode == 3) {
+            for (int i = 1; i < kMaxVoices; ++i) {
+                if (voices_[i].active) voices_[i].stopImmediate();
+            }
+            const float initLfo = (lfoDelaySec < 0.02f || voices_[0].active) ? 1.0f : 0.20f;
+            noteOrderCounter_++;
+            voices_[0].startVoice(midiNote, velocity, noteOrderCounter_, rangeFactor, initLfo, 0.0f, 1.0f);
+            return;
+        }
+
         int selectedIdx = -1;
 
-        // 1. Search in Round-Robin order for the next completely free/inactive voice
-        for (int i = 0; i < kMaxVoices; ++i) {
-            int idx = (rrIndex_ + i) % kMaxVoices;
-            if (!voices_[idx].active) {
-                selectedIdx = idx;
-                rrIndex_ = (idx + 1) % kMaxVoices;
-                break;
+        // POLY 2 in Jupiter-8 reuses the same voice if the same note is re-struck
+        if (isJp8 && voiceMode == 1) {
+            for (int i = 0; i < activeVoiceLimit; ++i) {
+                if (voices_[i].active && voices_[i].note == midiNote) {
+                    selectedIdx = i;
+                    break;
+                }
             }
         }
 
-        // 2. If all 6 voices are active, pick the oldest voice in release for Warm Retrigger
+        // 1. Search in Round-Robin order for the next completely free/inactive voice
+        if (selectedIdx < 0) {
+            for (int i = 0; i < activeVoiceLimit; ++i) {
+                int idx = (rrIndex_ + i) % activeVoiceLimit;
+                if (!voices_[idx].active) {
+                    selectedIdx = idx;
+                    rrIndex_ = (idx + 1) % activeVoiceLimit;
+                    break;
+                }
+            }
+        }
+
+        // 2. If all voices in pool are active, pick the oldest voice in release for Warm Retrigger
         if (selectedIdx < 0) {
             uint64_t oldestOrder = UINT64_MAX;
-            for (int i = 0; i < kMaxVoices; ++i) {
+            for (int i = 0; i < activeVoiceLimit; ++i) {
                 if (voices_[i].released && voices_[i].startOrder < oldestOrder) {
                     oldestOrder = voices_[i].startOrder;
                     selectedIdx = i;
                 }
             }
             if (selectedIdx >= 0) {
-                rrIndex_ = (selectedIdx + 1) % kMaxVoices;
+                rrIndex_ = (selectedIdx + 1) % activeVoiceLimit;
             }
         }
 
-        // 3. If all 6 voices are currently held, steal the oldest voice overall for Warm Retrigger
+        // 3. If all voices in pool are currently held, steal the oldest voice overall for Warm Retrigger
         if (selectedIdx < 0) {
             uint64_t oldestOrder = UINT64_MAX;
-            for (int i = 0; i < kMaxVoices; ++i) {
+            for (int i = 0; i < activeVoiceLimit; ++i) {
                 if (voices_[i].startOrder < oldestOrder) {
                     oldestOrder = voices_[i].startOrder;
                     selectedIdx = i;
                 }
             }
             if (selectedIdx < 0) selectedIdx = 0;
-            rrIndex_ = (selectedIdx + 1) % kMaxVoices;
+            rrIndex_ = (selectedIdx + 1) % activeVoiceLimit;
         }
 
         // 4. Softly damp any OTHER voice that is still ringing the exact same MIDI note (16ms RC decay)
         //    and preserve warm LFO delay charge across legato/arpeggio voices
         float maxActiveLfoEnv = arpEnabled_ ? 1.0f : 0.20f;
-        for (int i = 0; i < kMaxVoices; ++i) {
+        for (int i = 0; i < activeVoiceLimit; ++i) {
             if (i != selectedIdx && voices_[i].active) {
                 maxActiveLfoEnv = std::max(maxActiveLfoEnv, voices_[i].lfoDelayEnv);
                 if (voices_[i].note == midiNote) {
@@ -1121,11 +1393,9 @@ private:
             }
         }
 
-        const float rangeFactor = HeraTables::getRangeFactor(targetParams_[DCORange].load(std::memory_order_relaxed));
-        const float lfoDelaySec = HeraTables::getLfoDelaySec(targetParams_[LFODelay].load(std::memory_order_relaxed));
         const float initialLfoEnv = (lfoDelaySec < 0.02f) ? 1.0f : maxActiveLfoEnv;
         noteOrderCounter_++;
-        voices_[selectedIdx].startVoice(midiNote, velocity, noteOrderCounter_, rangeFactor, initialLfoEnv);
+        voices_[selectedIdx].startVoice(midiNote, velocity, noteOrderCounter_, rangeFactor, initialLfoEnv, 0.0f, 1.0f);
     }
 
     void triggerVoiceOff(int midiNote) {

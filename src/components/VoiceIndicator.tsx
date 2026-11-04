@@ -4,6 +4,7 @@ import { synthEngine } from '../audio/HeraAudioEngine';
 
 interface VoiceIndicatorProps {
   voices?: VoiceStatus[];
+  maxVoices?: number;
   className?: string;
 }
 
@@ -16,50 +17,58 @@ function midiToNoteName(midi: number): string {
   return `${note}${octave}`;
 }
 
-export const VoiceIndicator: React.FC<VoiceIndicatorProps> = React.memo(({ voices: externalVoices, className = '' }) => {
-  const [internalVoices, setInternalVoices] = useState<VoiceStatus[]>([]);
+export const VoiceIndicator: React.FC<VoiceIndicatorProps> = React.memo(
+  ({ voices: externalVoices, maxVoices, className = '' }) => {
+    const [internalVoices, setInternalVoices] = useState<VoiceStatus[]>([]);
 
-  useEffect(() => {
-    if (externalVoices !== undefined) return;
-    synthEngine.setVoicesListener((statuses) => {
-      setInternalVoices(statuses);
-    });
-  }, [externalVoices]);
+    useEffect(() => {
+      if (externalVoices !== undefined) return;
+      synthEngine.setVoicesListener((statuses) => {
+        setInternalVoices(statuses);
+      });
+    }, [externalVoices]);
 
-  const activeVoices = externalVoices ?? internalVoices;
+    const activeVoices = externalVoices ?? internalVoices;
+    const totalVoices = maxVoices ?? (activeVoices.length === 8 ? 8 : 6);
 
-  return (
-    <div className={`flex flex-col gap-1 bg-zinc-950 p-2 rounded border border-zinc-800/80 shadow-inner ${className}`}>
-      <div className="flex items-center justify-between text-[8px] font-mono uppercase text-zinc-400 border-b border-zinc-800 pb-1 mb-0.5">
-        <span>Polyphonic Voices</span>
-        <span className="text-amber-500 font-bold">6-Voice</span>
+    return (
+      <div className={`flex flex-col gap-1 bg-zinc-950 p-2 rounded border border-zinc-800/80 shadow-inner ${className}`}>
+        <div className="flex items-center justify-between text-[8px] font-mono uppercase text-zinc-400 border-b border-zinc-800 pb-1 mb-0.5">
+          <span>Polyphonic Voices</span>
+          <span className={totalVoices === 8 ? 'text-orange-400 font-bold' : 'text-amber-500 font-bold'}>
+            {totalVoices}-Voice
+          </span>
+        </div>
+        <div
+          style={{ gridTemplateColumns: `repeat(${totalVoices}, minmax(0, 1fr))` }}
+          className="grid gap-1.5"
+        >
+          {Array.from({ length: totalVoices }).map((_, i) => {
+            const v = activeVoices[i];
+            const isActive = !!v?.active;
+            return (
+              <div key={i} className="flex flex-col items-center">
+                <div
+                  className={`w-2.5 h-2.5 rounded-full border transition-all duration-75 ${
+                    isActive
+                      ? 'bg-red-500 border-red-300 shadow-[0_0_8px_#ef4444]'
+                      : 'bg-zinc-900 border-zinc-800'
+                  }`}
+                />
+                <span className="text-[7px] font-mono text-zinc-500 mt-0.5">{i + 1}</span>
+                <span
+                  className={`text-[8px] font-mono font-bold mt-0.5 ${
+                    isActive ? 'text-amber-400' : 'text-zinc-600'
+                  }`}
+                >
+                  {isActive ? midiToNoteName(v.note) : '-'}
+                </span>
+              </div>
+            );
+          })}
+        </div>
       </div>
-      <div className="grid grid-cols-6 gap-1.5">
-        {Array.from({ length: 6 }).map((_, i) => {
-          const v = activeVoices[i];
-          const isActive = !!v?.active;
-          return (
-            <div key={i} className="flex flex-col items-center">
-              <div
-                className={`w-2.5 h-2.5 rounded-full border transition-all duration-75 ${
-                  isActive
-                    ? 'bg-red-500 border-red-300 shadow-[0_0_8px_#ef4444]'
-                    : 'bg-zinc-900 border-zinc-800'
-                }`}
-              />
-              <span className="text-[7px] font-mono text-zinc-500 mt-0.5">{i + 1}</span>
-              <span
-                className={`text-[8px] font-mono font-bold mt-0.5 ${
-                  isActive ? 'text-amber-400' : 'text-zinc-600'
-                }`}
-              >
-                {isActive ? midiToNoteName(v.note) : '-'}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-});
+    );
+  }
+);
 

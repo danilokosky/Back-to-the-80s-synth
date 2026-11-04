@@ -54,6 +54,29 @@ export interface HeraParameters {
   ReverbTime: number;        // 0.0 - 1.0 (Pre-Delay & Room Size Time)
   ReverbDecay: number;       // 0.0 - 1.0 (RT60 Decay Feedback)
   ReverbMix: number;         // 0.0 - 1.0 (Dry/Wet)
+
+  // Dual-Synth Architecture: Roland Jupiter-8 Extensions
+  SynthModel: number;        // 0: JUNO-60 (6-Voice DCO), 1: JUPITER-8 (8-Voice Dual-VCO)
+  JP8VoiceMode: number;      // 0: POLY 1, 1: POLY 2, 2: UNISON, 3: SOLO
+  JP8LfoWave: number;        // 0: SINE, 1: TRI, 2: SAW, 3: RND (S&H)
+  JP8Vco1Wave: number;       // 0: TRI, 1: SAW, 2: PULSE, 3: SQUARE
+  JP8Vco2Wave: number;       // 0: SAW, 1: PULSE, 2: SINE/LOW
+  JP8Vco2Range: number;      // 0: -1 OCT, 1: 0 (8'), 2: +1 OCT, 3: +5TH (+7st)
+  JP8Vco2Detune: number;     // 0.0 - 1.0 (0.5 = 0 cents, 0.0 = -50c, 1.0 = +50c)
+  JP8VcoSync: number;        // 0: OFF, 1: ON (Hard Sync VCO-1 <- VCO-2)
+  JP8CrossMod: number;       // 0.0 - 1.0 (VCO-2 -> VCO-1 FM Cross-Modulation)
+  JP8Vco1Level: number;      // 0.0 - 1.0 (VCO-1 Mixer Level)
+  JP8Vco2Level: number;      // 0.0 - 1.0 (VCO-2 Mixer Level)
+  JP8PitchEnvDepth: number;  // 0.0 - 1.0 (ENV-1 -> VCO Pitch Mod Depth)
+  JP8PitchEnvTarget: number; // 0: VCO-2, 1: VCO-1, 2: BOTH
+  JP8VcfSlope: number;       // 0: 24dB/oct (4-Pole), 1: 12dB/oct (2-Pole)
+  JP8VcfEnvSource: number;   // 0: ENV-2, 1: ENV-1
+  JP8VcaLfoDepth: number;    // 0.0 - 1.0 (LFO -> VCA AM Depth)
+  JP8Env1Attack: number;     // 0.0 - 1.0
+  JP8Env1Decay: number;      // 0.0 - 1.0
+  JP8Env1Sustain: number;    // 0.0 - 1.0
+  JP8Env1Release: number;    // 0.0 - 1.0
+  JP8Env1Polarity: number;   // 0: NORMAL (+), 1: INVERT (-)
 }
 
 export const DEFAULT_PARAMETERS: HeraParameters = {
@@ -102,6 +125,29 @@ export const DEFAULT_PARAMETERS: HeraParameters = {
   ReverbTime: 0.35,
   ReverbDecay: 0.55,
   ReverbMix: 0.30,
+
+  // Dual-Synth Jupiter-8 Defaults
+  SynthModel: 0, // 0 = JUNO-60, 1 = JUPITER-8
+  JP8VoiceMode: 0, // POLY 1 (8 Voices)
+  JP8LfoWave: 0, // SINE
+  JP8Vco1Wave: 1, // SAW
+  JP8Vco2Wave: 0, // SAW
+  JP8Vco2Range: 1, // 0 (Unison 8')
+  JP8Vco2Detune: 0.56, // Slight warm analog detune (+6 cents)
+  JP8VcoSync: 0, // OFF
+  JP8CrossMod: 0.0,
+  JP8Vco1Level: 0.85,
+  JP8Vco2Level: 0.75,
+  JP8PitchEnvDepth: 0.0,
+  JP8PitchEnvTarget: 0, // VCO-2
+  JP8VcfSlope: 0, // 24dB
+  JP8VcfEnvSource: 0, // ENV-2
+  JP8VcaLfoDepth: 0.0,
+  JP8Env1Attack: 0.05,
+  JP8Env1Decay: 0.35,
+  JP8Env1Sustain: 0.2,
+  JP8Env1Release: 0.3,
+  JP8Env1Polarity: 0, // NORMAL (+)
 };
 
 export interface VoiceStatus {

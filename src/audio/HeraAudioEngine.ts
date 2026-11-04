@@ -54,8 +54,9 @@ class HeraVoiceInstance {
   active: boolean = false;
   released: boolean = true;
   private sameNoteDamped: boolean = false;
+  private unisonDetuneCents: number = 0;
 
-  // Persistent Analog DCO Nodes (never destroyed during playback -> zero graph-lock & zero phase clicks)
+  // Persistent Analog DCO / VCO Nodes (never destroyed during playback -> zero graph-lock & zero phase clicks)
   private ctx: AudioContext;
   private voiceGain: GainNode;
   private sawOsc: OscillatorNode;
@@ -65,6 +66,15 @@ class HeraVoiceInstance {
   private subOsc: OscillatorNode;
   private noiseSource: AudioBufferSourceNode;
 
+  // Jupiter-8 VCO-2 & Cross-Modulation (FM) + Sync Harmonic Shaper
+  private vco2Osc: OscillatorNode;
+  private vco2PulseInvertGain: GainNode;
+  private vco2PulseDelay: DelayNode;
+  private vco2Gain: GainNode;
+  private vco2XModGain: GainNode;
+  private syncShaper: WaveShaperNode;
+  private syncShaperGain: GainNode;
+
   private sawGain: GainNode;
   private pulseGain: GainNode;
   private subGain: GainNode;
@@ -72,12 +82,15 @@ class HeraVoiceInstance {
 
   private vcfFilter1: BiquadFilterNode;
   private vcfFilter2: BiquadFilterNode;
+  private vcf12dBGain: GainNode;
+  private vcf24dBGain: GainNode;
   private envGain: GainNode;
 
   // Audio-rate LFO modulation gains
   private voiceLfoPitchGain: GainNode;
   private voiceLfoFilterGain: GainNode;
   private voiceLfoPwmGain: GainNode;
+  private voiceLfoVcaGain: GainNode;
 
   private noiseBuffer: AudioBuffer;
   private releaseTimer: number | null = null;
@@ -108,8 +121,10 @@ class HeraVoiceInstance {
     this.subGain.gain.value = 0;
     this.noiseGain = ctx.createGain();
     this.noiseGain.gain.value = 0;
+    this.vco2Gain = ctx.createGain();
+    this.vco2Gain.gain.value = 0;
 
-    // 4-pole cascaded filter (2x 2-pole Biquad in series)
+    // 4-pole cascaded filter (2x 2-pole Biquad in series) with 12dB (2-pole) / 24dB (4-pole) selector
     this.vcfFilter1 = ctx.createBiquadFilter();
     this.vcfFilter1.type = 'lowpass';
     this.vcfFilter1.frequency.value = 2000;
@@ -117,18 +132,27 @@ class HeraVoiceInstance {
     this.vcfFilter2.type = 'lowpass';
     this.vcfFilter2.frequency.value = 2000;
 
+    this.vcf12dBGain = ctx.createGain();
+    this.vcf12dBGain.gain.value = 0.0; // 0 = 24dB mode
+    this.vcf24dBGain = ctx.createGain();
+    this.vcf24dBGain.gain.value = 1.0; // 1 = 24dB mode
+
     // Connect oscillator gains to filter once
     this.sawGain.connect(this.vcfFilter1);
     this.pulseGain.connect(this.vcfFilter1);
     this.subGain.connect(this.vcfFilter1);
     this.noiseGain.connect(this.vcfFilter1);
+    this.vco2Gain.connect(this.vcfFilter1);
 
     this.vcfFilter1.connect(this.vcfFilter2);
+    this.vcfFilter1.connect(this.vcf12dBGain);
+    this.vcfFilter2.connect(this.vcf24dBGain);
 
     this.envGain = ctx.createGain();
     this.envGain.gain.value = 0;
 
-    this.vcfFilter2.connect(this.envGain);
+    this.vcf12dBGain.connect(this.envGain);
+    this.vcf24dBGain.connect(this.envGain);
     this.envGain.connect(this.voiceGain);
     this.voiceGain.connect(destination);
 
@@ -145,17 +169,22 @@ class HeraVoiceInstance {
     this.voiceLfoPwmGain.gain.value = 0;
     lfoSource.connect(this.voiceLfoPwmGain);
 
+    this.voiceLfoVcaGain = ctx.createGain();
+    this.voiceLfoVcaGain.gain.value = 0;
+    lfoSource.connect(this.voiceLfoVcaGain);
+    this.voiceLfoVcaGain.connect(this.voiceGain.gain);
+
     // Connect LFO filter gain directly to filter detune params (cents)
     this.voiceLfoFilterGain.connect(this.vcfFilter1.detune);
     this.voiceLfoFilterGain.connect(this.vcfFilter2.detune);
 
-    // Initialize persistent continuously-running oscillators (true DCO architecture)
+    // Initialize persistent continuously-running oscillators (true DCO / VCO-1 architecture)
     this.sawOsc = ctx.createOscillator();
     this.sawOsc.type = 'sawtooth';
     this.sawOsc.frequency.value = 440;
     this.sawOsc.connect(this.sawGain);
 
-    // Single phase-locked DCO sawtooth split into direct + inverted delayed path for 100% uniform PWM across all 6 voices
+    // Single phase-locked DCO sawtooth split into direct + inverted delayed path for 100% uniform PWM
     this.pulseOsc = ctx.createOscillator();
     this.pulseOsc.type = 'sawtooth';
     this.pulseOsc.frequency.value = 440;
@@ -174,6 +203,44 @@ class HeraVoiceInstance {
     // Connect LFO PWM modulation to pulseDelay.delayTime
     this.voiceLfoPwmGain.connect(this.pulseDelay.delayTime);
 
+    // Jupiter-8 VCO-2 Oscillator + PWM path + Cross-Mod FM + Hard Sync harmonic shaper
+    this.vco2Osc = ctx.createOscillator();
+    this.vco2Osc.type = 'sawtooth';
+    this.vco2Osc.frequency.value = 440;
+
+    this.vco2PulseInvertGain = ctx.createGain();
+    this.vco2PulseInvertGain.gain.value = 0.0; // Activated when VCO-2 wave == PULSE
+    this.vco2PulseDelay = ctx.createDelay(0.05);
+    this.vco2PulseDelay.delayTime.value = 0.001;
+
+    this.vco2Osc.connect(this.vco2Gain);
+    this.vco2Osc.connect(this.vco2PulseInvertGain);
+    this.vco2PulseInvertGain.connect(this.vco2PulseDelay);
+    this.vco2PulseDelay.connect(this.vco2Gain);
+    this.voiceLfoPwmGain.connect(this.vco2PulseDelay.delayTime);
+
+    // Cross-Modulation (VCO-2 -> VCO-1 Frequency FM)
+    this.vco2XModGain = ctx.createGain();
+    this.vco2XModGain.gain.value = 0;
+    this.vco2Osc.connect(this.vco2XModGain);
+    this.vco2XModGain.connect(this.sawOsc.frequency);
+    this.vco2XModGain.connect(this.pulseOsc.frequency);
+
+    // Hard Sync Harmonic Edge Shaper (when JP8VcoSync == 1)
+    this.syncShaper = ctx.createWaveShaper();
+    const syncCurve = new Float32Array(256);
+    for (let i = 0; i < 256; i++) {
+      const x = (i * 2) / 255 - 1;
+      syncCurve[i] = Math.sin(x * Math.PI * 2.5) * Math.tanh(2.2 * x);
+    }
+    this.syncShaper.curve = syncCurve;
+    this.syncShaperGain = ctx.createGain();
+    this.syncShaperGain.gain.value = 0;
+    this.vco2Osc.connect(this.syncShaper);
+    this.sawOsc.connect(this.syncShaper);
+    this.syncShaper.connect(this.syncShaperGain);
+    this.syncShaperGain.connect(this.vcfFilter1);
+
     this.subOsc = ctx.createOscillator();
     this.subOsc.type = 'square';
     this.subOsc.frequency.value = 220;
@@ -188,11 +255,13 @@ class HeraVoiceInstance {
     this.voiceLfoPitchGain.connect(this.sawOsc.detune);
     this.voiceLfoPitchGain.connect(this.pulseOsc.detune);
     this.voiceLfoPitchGain.connect(this.subOsc.detune);
+    this.voiceLfoPitchGain.connect(this.vco2Osc.detune);
 
     // Start all oscillators once (silenced behind envGain = 0 when idle)
     const now = ctx.currentTime;
     this.sawOsc.start(now);
     this.pulseOsc.start(now);
+    this.vco2Osc.start(now);
     this.subOsc.start(now);
     this.noiseSource.start(now);
   }
@@ -215,7 +284,9 @@ class HeraVoiceInstance {
     params: HeraParameters,
     pitchBendSemitones: number,
     modWheelAmount: number = 0,
-    keepLfoWarm: boolean = false
+    keepLfoWarm: boolean = false,
+    unisonDetuneCents: number = 0,
+    gainScale: number = 1.0
   ) {
     if (this.releaseTimer !== null) {
       clearTimeout(this.releaseTimer);
@@ -230,9 +301,10 @@ class HeraVoiceInstance {
     this.active = true;
     this.released = false;
     this.sameNoteDamped = false;
+    this.unisonDetuneCents = unisonDetuneCents;
 
-    // Update DCO frequencies, PWM width, and waveform mix levels smoothly
-    this.updateOscillators(params, pitchBendSemitones, true);
+    // Update DCO / Dual-VCO frequencies, PWM width, Sync, Cross-Mod, and waveform mix levels smoothly
+    this.updateOscillators(params, pitchBendSemitones, true, wasActive);
 
     // Schedule LFO delay envelope for this voice
     this.scheduleLfo(params, modWheelAmount, t, keepLfoWarm || wasActive);
@@ -241,7 +313,7 @@ class HeraVoiceInstance {
     this.updateFilter(params, pitchBendSemitones, 1.0, true, wasActive);
 
     // Amplitude Envelope (Linear & musical velocity scaling)
-    this.currentVelocityFactor = 0.45 + 0.55 * Math.min(1.0, Math.max(0.1, velocity / 127));
+    this.currentVelocityFactor = (0.45 + 0.55 * Math.min(1.0, Math.max(0.1, velocity / 127))) * gainScale;
     const vcaLevel = Math.max(0, Math.min(1, params.VCADepth));
     const envPeak = this.currentVelocityFactor;
 
@@ -272,15 +344,23 @@ class HeraVoiceInstance {
     }
   }
 
-  updateOscillators(params: HeraParameters, pitchBendSemitones: number, isNoteOn: boolean = false) {
+  updateOscillators(
+    params: HeraParameters,
+    pitchBendSemitones: number,
+    isNoteOn: boolean = false,
+    wasActive: boolean = false
+  ) {
     const t = this.ctx.currentTime;
+    const isJp8 = (params.SynthModel ?? 0) >= 0.5;
     const rangeFactors = [0.5, 1.0, 2.0];
     const rangeFactor = rangeFactors[Math.max(0, Math.min(2, Math.floor(params.DCORange)))];
 
     const midiFreq = 440 * Math.pow(2, (this.note - 69) / 12);
     this.baseFreq = midiFreq * rangeFactor;
 
-    const totalDetune = pitchBendSemitones * 100;
+    const totalDetune = pitchBendSemitones * 100 + this.unisonDetuneCents;
+    const isSoloGlide = isJp8 && Math.round(params.JP8VoiceMode ?? 0) === 3 && wasActive;
+    const glideTau = isSoloGlide ? 0.018 : 0.0012;
 
     const pwm = Math.max(0, Math.min(1, params.DCOPWMDepth));
     const pwmMod = Math.round(params.DCOPWMMod ?? 0);
@@ -289,49 +369,132 @@ class HeraVoiceInstance {
     this.holdParam(this.sawOsc.frequency, t);
     this.holdParam(this.pulseOsc.frequency, t);
     this.holdParam(this.subOsc.frequency, t);
+    this.holdParam(this.vco2Osc.frequency, t);
     this.holdParam(this.sawOsc.detune, t);
     this.holdParam(this.pulseOsc.detune, t);
     this.holdParam(this.subOsc.detune, t);
+    this.holdParam(this.vco2Osc.detune, t);
     this.holdParam(this.pulseDelay.delayTime, t);
+    this.holdParam(this.vco2PulseDelay.delayTime, t);
     this.holdParam(this.voiceLfoPwmGain.gain, t);
+    this.holdParam(this.vco2XModGain.gain, t);
 
-    // Smooth 1.2ms micro-transition prevents delay-line & oscillator discontinuities at high BPM (150-260 BPM)
-    this.sawOsc.frequency.setTargetAtTime(this.baseFreq, t, 0.0012);
-    this.pulseOsc.frequency.setTargetAtTime(this.baseFreq, t, 0.0012);
-    this.subOsc.frequency.setTargetAtTime(this.baseFreq * 0.5, t, 0.0012);
+    // VCO-1waveform selection in Jupiter-8 mode
+    if (isJp8) {
+      const vco1Wave = Math.round(params.JP8Vco1Wave ?? 1);
+      if (vco1Wave === 0) {
+        this.sawOsc.type = 'triangle';
+      } else if (vco1Wave === 3) {
+        this.sawOsc.type = 'square';
+      } else {
+        this.sawOsc.type = 'sawtooth';
+      }
 
-    this.sawOsc.detune.setTargetAtTime(totalDetune, t, 0.0015);
-    this.pulseOsc.detune.setTargetAtTime(totalDetune, t, 0.0015);
+      const vco2Wave = Math.round(params.JP8Vco2Wave ?? 0);
+      if (vco2Wave === 2) {
+        this.vco2Osc.type = 'sine';
+        this.vco2PulseInvertGain.gain.setTargetAtTime(0.0, t, 0.003);
+      } else if (vco2Wave === 3) {
+        this.vco2Osc.type = 'square';
+        this.vco2PulseInvertGain.gain.setTargetAtTime(0.0, t, 0.003);
+      } else if (vco2Wave === 1) {
+        this.vco2Osc.type = 'sawtooth';
+        this.vco2PulseInvertGain.gain.setTargetAtTime(-1.0, t, 0.003);
+      } else {
+        this.vco2Osc.type = 'sawtooth';
+        this.vco2PulseInvertGain.gain.setTargetAtTime(0.0, t, 0.003);
+      }
+    } else {
+      if (this.sawOsc.type !== 'sawtooth') {
+        this.sawOsc.type = 'sawtooth';
+      }
+      this.vco2PulseInvertGain.gain.setTargetAtTime(0.0, t, 0.003);
+    }
+
+    // Smooth micro-transition (or Solo portamento in JP-8 Solo mode)
+    this.sawOsc.frequency.setTargetAtTime(this.baseFreq, t, glideTau);
+    this.pulseOsc.frequency.setTargetAtTime(this.baseFreq, t, glideTau);
+    this.subOsc.frequency.setTargetAtTime(this.baseFreq * 0.5, t, glideTau);
+
+    // VCO-2 frequency & detune in Jupiter-8 mode
+    const vco2RangeIdx = Math.max(0, Math.min(3, Math.round(params.JP8Vco2Range ?? 1)));
+    const vco2RangeFactors = [0.5, 1.0, 2.0, 1.498307]; // -1 Oct, Unison, +1 Oct, +5th (+7 semitones)
+    const vco2Freq = this.baseFreq * (isJp8 ? vco2RangeFactors[vco2RangeIdx] : 1.0);
+    this.vco2Osc.frequency.setTargetAtTime(vco2Freq, t, glideTau);
+
+    const vco2FineCents = isJp8 ? ((params.JP8Vco2Detune ?? 0.5) - 0.5) * 100 : 0;
+
+    // Jupiter-8 ENV-1 Pitch Modulation (for Brass Blip & Screaming Sync Sweeps)
+    const pitchEnvDepth = isJp8 ? (params.JP8PitchEnvDepth ?? 0) : 0;
+    const pitchEnvTarget = Math.round(params.JP8PitchEnvTarget ?? 0); // 0: VCO-2, 1: VCO-1, 2: BOTH
+    const env1Pol = Math.round(params.JP8Env1Polarity ?? 0) === 1 ? -1 : 1;
+    const env1PeakCents = pitchEnvDepth * 2400 * env1Pol;
+    const env1SustainCents = env1PeakCents * (params.JP8Env1Sustain ?? 0.2);
+
+    const applyPitchEnvVco1 = isJp8 && Math.abs(pitchEnvDepth) > 0.005 && (pitchEnvTarget === 1 || pitchEnvTarget === 2);
+    const applyPitchEnvVco2 = isJp8 && Math.abs(pitchEnvDepth) > 0.005 && (pitchEnvTarget === 0 || pitchEnvTarget === 2);
+
+    const a1Sec = Math.max(0.004, getAttackSec(params.JP8Env1Attack ?? 0.05));
+    const d1Sec = Math.max(0.006, getDecaySec(params.JP8Env1Decay ?? 0.35));
+
+    if (isNoteOn && applyPitchEnvVco1) {
+      this.sawOsc.detune.setTargetAtTime(totalDetune + env1PeakCents, t, a1Sec * 0.35);
+      this.pulseOsc.detune.setTargetAtTime(totalDetune + env1PeakCents, t, a1Sec * 0.35);
+      this.sawOsc.detune.setTargetAtTime(totalDetune + env1SustainCents, t + a1Sec, d1Sec * 0.33);
+      this.pulseOsc.detune.setTargetAtTime(totalDetune + env1SustainCents, t + a1Sec, d1Sec * 0.33);
+    } else {
+      const vco1RestCents = applyPitchEnvVco1 && !this.released ? totalDetune + env1SustainCents : totalDetune;
+      this.sawOsc.detune.setTargetAtTime(vco1RestCents, t, 0.0015);
+      this.pulseOsc.detune.setTargetAtTime(vco1RestCents, t, 0.0015);
+    }
+
     this.subOsc.detune.setTargetAtTime(totalDetune, t, 0.0015);
+
+    if (isNoteOn && applyPitchEnvVco2) {
+      this.vco2Osc.detune.setTargetAtTime(totalDetune + vco2FineCents + env1PeakCents, t, a1Sec * 0.35);
+      this.vco2Osc.detune.setTargetAtTime(totalDetune + vco2FineCents + env1SustainCents, t + a1Sec, d1Sec * 0.33);
+    } else {
+      const vco2RestCents =
+        applyPitchEnvVco2 && !this.released
+          ? totalDetune + vco2FineCents + env1SustainCents
+          : totalDetune + vco2FineCents;
+      this.vco2Osc.detune.setTargetAtTime(vco2RestCents, t, 0.0015);
+    }
+
+    // Jupiter-8 Cross-Modulation (VCO-2 -> VCO-1 FM in Hz)
+    const xModDepthHz = isJp8 ? Math.pow(Math.max(0, Math.min(1, params.JP8CrossMod ?? 0)), 1.6) * this.baseFreq * 1.8 : 0;
+    this.vco2XModGain.gain.setTargetAtTime(xModDepthHz, t, 0.005);
 
     if (pwmMod === 1) {
       // PWM = LFO: center pulse at 50% duty cycle and modulate delayTime via global LFO
       const centerDelay = Math.max(0.00005, Math.min(0.04, period * 0.5));
       const lfoPwmDepthSec = Math.min(centerDelay * 0.82, period * 0.40 * pwm);
       this.pulseDelay.delayTime.setTargetAtTime(centerDelay, t, 0.002);
+      this.vco2PulseDelay.delayTime.setTargetAtTime(centerDelay, t, 0.002);
       this.voiceLfoPwmGain.gain.setTargetAtTime(lfoPwmDepthSec, t, 0.005);
     } else if (pwmMod === 2) {
-      // PWM = ENV: modulate pulse width with ADSR envelope
+      // PWM = ENV: modulate pulse width with ADSR envelope (ENV-1 in JP-8 mode, ENV in Juno-60 mode)
       this.voiceLfoPwmGain.gain.setTargetAtTime(0, t, 0.005);
+      const envSus = isJp8 ? (params.JP8Env1Sustain ?? 0.2) : params.ENVSustain;
       const baseDelay = Math.max(0.00005, Math.min(0.04, period * 0.5));
       const peakDelay = Math.max(0.00005, Math.min(0.04, period * (0.5 - 0.42 * pwm)));
       const sustainDelay = Math.max(
         0.00005,
-        Math.min(0.04, period * (0.5 - 0.42 * pwm * params.ENVSustain))
+        Math.min(0.04, period * (0.5 - 0.42 * pwm * envSus))
       );
       if (isNoteOn) {
-        const attackSec = Math.max(0.004, getAttackSec(params.ENVAttack));
-        const decaySec = Math.max(0.006, getDecaySec(params.ENVDecay));
+        const attackSec = Math.max(0.004, getAttackSec(isJp8 ? (params.JP8Env1Attack ?? 0.05) : params.ENVAttack));
+        const decaySec = Math.max(0.006, getDecaySec(isJp8 ? (params.JP8Env1Decay ?? 0.35) : params.ENVDecay));
         this.pulseDelay.delayTime.setTargetAtTime(peakDelay, t, attackSec * 0.35);
-        if (params.ENVSustain < 0.99) {
+        this.vco2PulseDelay.delayTime.setTargetAtTime(peakDelay, t, attackSec * 0.35);
+        if (envSus < 0.99) {
           this.pulseDelay.delayTime.setTargetAtTime(sustainDelay, t + attackSec, decaySec * 0.33);
+          this.vco2PulseDelay.delayTime.setTargetAtTime(sustainDelay, t + attackSec, decaySec * 0.33);
         }
       } else {
-        this.pulseDelay.delayTime.setTargetAtTime(
-          this.released ? baseDelay : sustainDelay,
-          t,
-          0.005
-        );
+        const dVal = this.released ? baseDelay : sustainDelay;
+        this.pulseDelay.delayTime.setTargetAtTime(dVal, t, 0.005);
+        this.vco2PulseDelay.delayTime.setTargetAtTime(dVal, t, 0.005);
       }
     } else {
       // PWM = MAN: manual static pulse width control
@@ -339,6 +502,7 @@ class HeraVoiceInstance {
       const pulseWidthRatio = 0.5 - 0.45 * Math.max(-0.95, Math.min(0.95, pwm));
       const delayTime = Math.max(0.00005, Math.min(0.04, period * pulseWidthRatio));
       this.pulseDelay.delayTime.setTargetAtTime(delayTime, t, 0.0015);
+      this.vco2PulseDelay.delayTime.setTargetAtTime(delayTime, t, 0.0015);
     }
 
     this.updateOscillatorLevels(params);
@@ -346,15 +510,44 @@ class HeraVoiceInstance {
 
   updateOscillatorLevels(params: HeraParameters) {
     const t = this.ctx.currentTime;
+    const isJp8 = (params.SynthModel ?? 0) >= 0.5;
+
     this.holdParam(this.sawGain.gain, t);
     this.holdParam(this.pulseGain.gain, t);
     this.holdParam(this.subGain.gain, t);
     this.holdParam(this.noiseGain.gain, t);
+    this.holdParam(this.vco2Gain.gain, t);
+    this.holdParam(this.syncShaperGain.gain, t);
 
-    this.sawGain.gain.setTargetAtTime(params.DCOSawLevel * 0.24, t, 0.005);
-    this.pulseGain.gain.setTargetAtTime(params.DCOPulseLevel * 0.24, t, 0.005);
-    this.subGain.gain.setTargetAtTime(params.DCOSubLevel * 0.18, t, 0.005);
-    this.noiseGain.gain.setTargetAtTime(params.DCONoiseLevel * 0.12, t, 0.005);
+    if (isJp8) {
+      const vco1Wave = Math.round(params.JP8Vco1Wave ?? 1);
+      const vco1Lvl = Math.max(0, Math.min(1, params.JP8Vco1Level ?? 0.85)) * 0.25;
+      const vco2Lvl = Math.max(0, Math.min(1, params.JP8Vco2Level ?? 0.75)) * 0.24;
+      const isSync = Math.round(params.JP8VcoSync ?? 0) === 1;
+
+      if (vco1Wave === 2) {
+        // VCO-1 = Variable Pulse (PWM)
+        this.sawGain.gain.setTargetAtTime(0, t, 0.005);
+        this.pulseGain.gain.setTargetAtTime(vco1Lvl, t, 0.005);
+      } else {
+        // VCO-1 = TRI (0), SAW (1), or SQUARE (3) via sawOsc
+        this.sawGain.gain.setTargetAtTime(vco1Lvl, t, 0.005);
+        this.pulseGain.gain.setTargetAtTime(0, t, 0.005);
+      }
+
+      this.vco2Gain.gain.setTargetAtTime(vco2Lvl, t, 0.005);
+      this.syncShaperGain.gain.setTargetAtTime(isSync ? vco1Lvl * 0.55 : 0.0, t, 0.005);
+      this.subGain.gain.setTargetAtTime(params.DCOSubLevel * 0.16, t, 0.005);
+      this.noiseGain.gain.setTargetAtTime(params.DCONoiseLevel * 0.12, t, 0.005);
+    } else {
+      // Authentic Juno-60 DCO Mixer
+      this.sawGain.gain.setTargetAtTime(params.DCOSawLevel * 0.24, t, 0.005);
+      this.pulseGain.gain.setTargetAtTime(params.DCOPulseLevel * 0.24, t, 0.005);
+      this.subGain.gain.setTargetAtTime(params.DCOSubLevel * 0.18, t, 0.005);
+      this.noiseGain.gain.setTargetAtTime(params.DCONoiseLevel * 0.12, t, 0.005);
+      this.vco2Gain.gain.setTargetAtTime(0, t, 0.005);
+      this.syncShaperGain.gain.setTargetAtTime(0, t, 0.005);
+    }
   }
 
   scheduleLfo(
@@ -363,13 +556,18 @@ class HeraVoiceInstance {
     t: number,
     keepLfoWarm: boolean = false
   ) {
+    const isJp8 = (params.SynthModel ?? 0) >= 0.5;
     const targetPitchCents =
       getDcoLfoPitchCents(params.DCOPitchModDepth) + getDcoLfoPitchCents(modWheelAmount);
     const targetFilterCents = params.VCFLFO * 2600;
+    const targetVcaLfo = isJp8 ? Math.max(0, Math.min(1, params.JP8VcaLfoDepth ?? 0)) * 0.35 : 0;
     const delaySec = getLfoDelaySec(params.LFODelay);
 
     this.holdParam(this.voiceLfoPitchGain.gain, t);
     this.holdParam(this.voiceLfoFilterGain.gain, t);
+    this.holdParam(this.voiceLfoVcaGain.gain, t);
+
+    this.voiceLfoVcaGain.gain.setTargetAtTime(targetVcaLfo, t, 0.008);
 
     if (delaySec < 0.02 || keepLfoWarm) {
       this.voiceLfoPitchGain.gain.setTargetAtTime(targetPitchCents, t, 0.006);
@@ -387,16 +585,20 @@ class HeraVoiceInstance {
 
   updateLfoDepth(params: HeraParameters, modWheelAmount: number) {
     const t = this.ctx.currentTime;
+    const isJp8 = (params.SynthModel ?? 0) >= 0.5;
     const targetPitchCents =
       getDcoLfoPitchCents(params.DCOPitchModDepth) + getDcoLfoPitchCents(modWheelAmount);
     const targetFilterCents = params.VCFLFO * 2600;
+    const targetVcaLfo = isJp8 ? Math.max(0, Math.min(1, params.JP8VcaLfoDepth ?? 0)) * 0.35 : 0;
 
     this.holdParam(this.voiceLfoPitchGain.gain, t);
     this.holdParam(this.voiceLfoFilterGain.gain, t);
+    this.holdParam(this.voiceLfoVcaGain.gain, t);
 
     // Apply immediately when moving DCO LFO, VCF LFO, or ModWheel so depth control is 100% responsive
     this.voiceLfoPitchGain.gain.setTargetAtTime(targetPitchCents, t, 0.008);
     this.voiceLfoFilterGain.gain.setTargetAtTime(targetFilterCents, t, 0.008);
+    this.voiceLfoVcaGain.gain.setTargetAtTime(targetVcaLfo, t, 0.008);
   }
 
   updateFilter(
@@ -407,6 +609,14 @@ class HeraVoiceInstance {
     _wasActive: boolean = false
   ) {
     const t = this.ctx.currentTime;
+    const isJp8 = (params.SynthModel ?? 0) >= 0.5;
+
+    // 12dB (2-pole) vs 24dB (4-pole) filter slope in Jupiter-8 mode
+    const is12dB = isJp8 && Math.round(params.JP8VcfSlope ?? 0) === 1;
+    this.holdParam(this.vcf12dBGain.gain, t);
+    this.holdParam(this.vcf24dBGain.gain, t);
+    this.vcf12dBGain.gain.setTargetAtTime(is12dB ? 1.0 : 0.0, t, 0.006);
+    this.vcf24dBGain.gain.setTargetAtTime(is12dB ? 0.0 : 1.0, t, 0.006);
 
     const minFreq = 16;
     const maxFreq = 20000;
@@ -423,9 +633,15 @@ class HeraVoiceInstance {
     this.vcfFilter1.Q.setTargetAtTime(resonanceQ, t, 0.015);
     this.vcfFilter2.Q.setTargetAtTime(resonanceQ, t, 0.015);
 
-    const envOctaves = params.VCFEnv * 6.5 * envAmountMultiplier;
+    const useEnv1 = isJp8 && Math.round(params.JP8VcfEnvSource ?? 0) === 1;
+    const envPol = useEnv1 && Math.round(params.JP8Env1Polarity ?? 0) === 1 ? -1.0 : 1.0;
+    const envAttackParam = useEnv1 ? (params.JP8Env1Attack ?? 0.05) : params.ENVAttack;
+    const envDecayParam = useEnv1 ? (params.JP8Env1Decay ?? 0.35) : params.ENVDecay;
+    const envSustainParam = useEnv1 ? (params.JP8Env1Sustain ?? 0.2) : params.ENVSustain;
+
+    const envOctaves = params.VCFEnv * 6.5 * envAmountMultiplier * envPol;
     const peakCutoffHz = Math.min(20000, Math.max(16, noteCutoffHz * Math.pow(2, envOctaves)));
-    const sustainCutoffHz = Math.min(20000, Math.max(16, noteCutoffHz * Math.pow(2, envOctaves * params.ENVSustain)));
+    const sustainCutoffHz = Math.min(20000, Math.max(16, noteCutoffHz * Math.pow(2, envOctaves * envSustainParam)));
 
     noteCutoffHz = Math.min(20000, Math.max(16, noteCutoffHz));
 
@@ -438,10 +654,10 @@ class HeraVoiceInstance {
     this.holdParam(this.vcfFilter2.frequency, t);
 
     if (isNoteOn && Math.abs(params.VCFEnv) > 0.01) {
-      const attackSec = Math.max(0.004, getAttackSec(params.ENVAttack));
-      const decaySec = Math.max(0.006, getDecaySec(params.ENVDecay));
+      const attackSec = Math.max(0.004, getAttackSec(envAttackParam));
+      const decaySec = Math.max(0.006, getDecaySec(envDecayParam));
 
-      if (params.ENVSustain >= 0.99) {
+      if (envSustainParam >= 0.99) {
         this.vcfFilter1.frequency.setTargetAtTime(peakCutoffHz, t, attackSec * 0.35);
         this.vcfFilter2.frequency.setTargetAtTime(peakCutoffHz, t, attackSec * 0.35);
       } else {
@@ -524,14 +740,19 @@ class HeraVoiceInstance {
       const timeConstant = Math.max(0.005, releaseSec * 0.25);
       this.envGain.gain.setTargetAtTime(0.0, t, timeConstant);
 
+      const isJp8 = (params.SynthModel ?? 0) >= 0.5;
+      const useEnv1 = isJp8 && Math.round(params.JP8VcfEnvSource ?? 0) === 1;
+      const vcfRelSec = useEnv1 ? Math.max(0.012, getReleaseSec(params.JP8Env1Release ?? 0.3)) : releaseSec;
+      const vcfTau = Math.max(0.005, vcfRelSec * 0.25);
+
       const minFreq = 16;
       const maxFreq = 20000;
       const restCutoffHz = Math.min(20000, Math.max(16, minFreq * Math.pow(maxFreq / minFreq, params.VCFCutoff)));
 
       this.holdParam(this.vcfFilter1.frequency, t);
       this.holdParam(this.vcfFilter2.frequency, t);
-      this.vcfFilter1.frequency.setTargetAtTime(restCutoffHz, t, timeConstant);
-      this.vcfFilter2.frequency.setTargetAtTime(restCutoffHz, t, timeConstant);
+      this.vcfFilter1.frequency.setTargetAtTime(restCutoffHz, t, vcfTau);
+      this.vcfFilter2.frequency.setTargetAtTime(restCutoffHz, t, vcfTau);
 
       this.releaseTimer = window.setTimeout(() => {
         this.active = false;
@@ -565,6 +786,7 @@ class HeraVoiceInstance {
     try {
       this.sawOsc.stop();
       this.pulseOsc.stop();
+      this.vco2Osc.stop();
       this.subOsc.stop();
       this.noiseSource.stop();
     } catch {}
@@ -572,6 +794,11 @@ class HeraVoiceInstance {
     this.pulseOsc.disconnect();
     this.pulseInvertGain.disconnect();
     this.pulseDelay.disconnect();
+    this.vco2Osc.disconnect();
+    this.vco2PulseInvertGain.disconnect();
+    this.vco2PulseDelay.disconnect();
+    this.vco2XModGain.disconnect();
+    this.syncShaper.disconnect();
     this.subOsc.disconnect();
     this.noiseSource.disconnect();
   }
@@ -628,9 +855,9 @@ export class HeraSynthesizerEngine {
   private globalLfoBus: GainNode | null = null;
   private masterVolume: number = 0.85;
 
-  // Voice allocation (6-voice polyphony with Round-Robin)
+  // Voice allocation (6-voice in Juno-60, 8-voice in Jupiter-8 with Round-Robin / Unison / Solo)
   private voices: HeraVoiceInstance[] = [];
-  private readonly MAX_VOICES = 6;
+  private readonly MAX_VOICES = 8;
   private rrIndex: number = 0;
   private noiseBuffer: AudioBuffer | null = null;
 
@@ -1370,44 +1597,119 @@ export class HeraSynthesizerEngine {
     }, stepDuration * 0.7);
   }
 
-  // Voice allocation and trigger (Authentic 6-Voice Round-Robin + Warm Analog Retrigger)
+  private updateGlobalLfoWave() {
+    if (!this.globalLfoOsc) return;
+    const isJp8 = (this.params.SynthModel ?? 0) >= 0.5;
+    if (!isJp8) {
+      this.globalLfoOsc.type = 'sine';
+      return;
+    }
+    const waveIdx = Math.round(this.params.JP8LfoWave ?? 0);
+    if (waveIdx === 1) {
+      this.globalLfoOsc.type = 'triangle';
+    } else if (waveIdx === 2) {
+      this.globalLfoOsc.type = 'sawtooth';
+    } else if (waveIdx === 3) {
+      this.globalLfoOsc.type = 'square';
+    } else {
+      this.globalLfoOsc.type = 'sine';
+    }
+  }
+
+  // Voice allocation and trigger (6-Voice Round-Robin in Juno-60; 8-Voice Poly1/Poly2/Unison/Solo in Jupiter-8)
   private triggerVoiceOn(note: number, velocity: number = 100) {
-    const numVoices = this.voices.length;
-    if (numVoices === 0) return;
+    const totalVoices = this.voices.length;
+    if (totalVoices === 0) return;
+
+    const isJp8 = (this.params.SynthModel ?? 0) >= 0.5;
+    const activeVoiceLimit = isJp8 ? Math.min(8, totalVoices) : Math.min(6, totalVoices);
+    const voiceMode = isJp8 ? Math.round(this.params.JP8VoiceMode ?? 0) : 0;
+
+    // JUPITER-8 UNISON MODE (4-voice fat analog stack with organic stereo/pitch spread)
+    if (isJp8 && voiceMode === 2) {
+      const unisonCount = Math.min(4, activeVoiceLimit);
+      const detuneSpread = [-14, -4.5, 4.5, 14];
+      const anyOtherActive = this.voices.slice(0, unisonCount).some(v => v.active);
+      for (let i = 0; i < unisonCount; i++) {
+        this.voices[i].start(
+          note,
+          velocity,
+          this.params,
+          this.pitchBendSemitones,
+          this.modWheelAmount,
+          anyOtherActive,
+          detuneSpread[i] ?? 0,
+          0.56
+        );
+      }
+      this.broadcastVoiceStatus();
+      return;
+    }
+
+    // JUPITER-8 SOLO MODE (Monophonic lead with warm analog portamento glide)
+    if (isJp8 && voiceMode === 3) {
+      const soloVoice = this.voices[0];
+      for (let i = 1; i < totalVoices; i++) {
+        if (this.voices[i].active) {
+          this.voices[i].stopImmediate();
+        }
+      }
+      soloVoice.start(
+        note,
+        velocity,
+        this.params,
+        this.pitchBendSemitones,
+        this.modWheelAmount,
+        soloVoice.active,
+        0,
+        1.0
+      );
+      this.broadcastVoiceStatus();
+      return;
+    }
+
+    const pool = this.voices.slice(0, activeVoiceLimit);
+
+    // POLY 2 in Jupiter-8 reuses the same voice if the same note is re-struck
+    let selectedVoice: HeraVoiceInstance | undefined;
+    if (isJp8 && voiceMode === 1) {
+      selectedVoice = pool.find(v => v.active && v.note === note);
+    }
 
     // 1. Search in Round-Robin order for the next completely free/inactive voice
-    let selectedVoice: HeraVoiceInstance | undefined;
-    for (let i = 0; i < numVoices; i++) {
-      const idx = (this.rrIndex + i) % numVoices;
-      if (!this.voices[idx].active) {
-        selectedVoice = this.voices[idx];
-        this.rrIndex = (idx + 1) % numVoices;
-        break;
+    if (!selectedVoice) {
+      for (let i = 0; i < activeVoiceLimit; i++) {
+        const idx = (this.rrIndex + i) % activeVoiceLimit;
+        if (!pool[idx].active) {
+          selectedVoice = pool[idx];
+          this.rrIndex = (idx + 1) % activeVoiceLimit;
+          break;
+        }
       }
     }
 
-    // 2. If all 6 voices are active, pick the oldest voice in release for Warm Retrigger
+    // 2. If all voices in pool are active, pick the oldest voice in release for Warm Retrigger
     if (!selectedVoice) {
-      const releasedVoices = this.voices
+      const releasedVoices = pool
         .filter(v => v.released)
         .sort((a, b) => a.startTime - b.startTime);
       if (releasedVoices.length > 0) {
         selectedVoice = releasedVoices[0];
-        this.rrIndex = (selectedVoice.id + 1) % numVoices;
+        this.rrIndex = (selectedVoice.id + 1) % activeVoiceLimit;
       }
     }
 
-    // 3. If all 6 voices are currently held, steal the oldest voice overall for Warm Retrigger
+    // 3. If all voices in pool are currently held, steal the oldest voice overall for Warm Retrigger
     if (!selectedVoice) {
-      const sortedAll = [...this.voices].sort((a, b) => a.startTime - b.startTime);
+      const sortedAll = [...pool].sort((a, b) => a.startTime - b.startTime);
       selectedVoice = sortedAll[0];
-      this.rrIndex = (selectedVoice.id + 1) % numVoices;
+      this.rrIndex = (selectedVoice.id + 1) % activeVoiceLimit;
     }
 
     // Softly damp any OTHER voice that is still ringing the exact same MIDI note
     // so rapid single-note arpeggios articulate cleanly without phase build-up
     let anyOtherVoiceActive = this.arpConfig.enabled;
-    for (const v of this.voices) {
+    for (const v of pool) {
       if (v !== selectedVoice && v.active) {
         anyOtherVoiceActive = true;
         if (v.note === note) {
@@ -1423,7 +1725,9 @@ export class HeraSynthesizerEngine {
         this.params,
         this.pitchBendSemitones,
         this.modWheelAmount,
-        anyOtherVoiceActive
+        anyOtherVoiceActive,
+        0,
+        1.0
       );
     }
 
@@ -1527,13 +1831,42 @@ export class HeraSynthesizerEngine {
 
     if (!this.ctx) return;
 
+    if (param === 'SynthModel') {
+      this.updateGlobalLfoWave();
+      // Stop extra voices 6 & 7 if switching from Jupiter-8 down to Juno-60
+      if ((value as number) < 0.5) {
+        for (let i = 6; i < this.voices.length; i++) {
+          this.voices[i].stopImmediate();
+        }
+      }
+      this.voices.forEach(v => {
+        if (v.active) {
+          v.updateOscillators(this.params, this.pitchBendSemitones, false);
+          v.updateLfoDepth(this.params, this.modWheelAmount);
+          v.updateFilter(this.params, this.pitchBendSemitones);
+        }
+      });
+      this.broadcastVoiceStatus();
+      return;
+    }
+
+    if (param === 'JP8LfoWave') {
+      this.updateGlobalLfoWave();
+      return;
+    }
+
     if (param === 'HPF' && this.hpfFilter) {
       this.hpfFilter.frequency.setTargetAtTime(getHpfFrequency(value as number), this.ctx.currentTime, 0.02);
     } else if (param === 'ChorusI' || param === 'ChorusII') {
       this.updateChorusMode();
     } else if (param === 'LFORate' && this.globalLfoOsc) {
       this.globalLfoOsc.frequency.setTargetAtTime(getLfoRateHz(value as number), this.ctx.currentTime, 0.015);
-    } else if (param === 'LFODelay' || param === 'DCOPitchModDepth' || param === 'VCFLFO') {
+    } else if (
+      param === 'LFODelay' ||
+      param === 'DCOPitchModDepth' ||
+      param === 'VCFLFO' ||
+      param === 'JP8VcaLfoDepth'
+    ) {
       this.voices.forEach(v => {
         v.updateLfoDepth(this.params, this.modWheelAmount);
       });
@@ -1551,20 +1884,37 @@ export class HeraSynthesizerEngine {
       param === 'DCOSawLevel' ||
       param === 'DCOPulseLevel' ||
       param === 'DCOSubLevel' ||
-      param === 'DCONoiseLevel'
+      param === 'DCONoiseLevel' ||
+      param === 'JP8Vco1Level' ||
+      param === 'JP8Vco2Level' ||
+      param === 'JP8Vco1Wave' ||
+      param === 'JP8Vco2Wave'
     ) {
       this.voices.forEach(v => {
         if (v.active) {
           v.updateOscillatorLevels(this.params);
         }
       });
-    } else if (param.startsWith('DCO')) {
+    } else if (
+      param.startsWith('DCO') ||
+      param === 'JP8Vco2Range' ||
+      param === 'JP8Vco2Detune' ||
+      param === 'JP8VcoSync' ||
+      param === 'JP8CrossMod' ||
+      param === 'JP8PitchEnvDepth' ||
+      param === 'JP8PitchEnvTarget'
+    ) {
       this.voices.forEach(v => {
         if (v.active) {
           v.updateOscillators(this.params, this.pitchBendSemitones, false);
         }
       });
-    } else if (param.startsWith('VCF')) {
+    } else if (
+      param.startsWith('VCF') ||
+      param === 'JP8VcfSlope' ||
+      param === 'JP8VcfEnvSource' ||
+      param.startsWith('JP8Env1')
+    ) {
       this.voices.forEach(v => {
         if (v.active) {
           v.updateFilter(this.params, this.pitchBendSemitones);
@@ -1581,20 +1931,27 @@ export class HeraSynthesizerEngine {
   }
 
   setAllParameters(params: HeraParameters) {
-    this.params = { ...params };
+    this.params = { ...DEFAULT_PARAMETERS, ...params };
     if (typeof params.MasterVolume === 'number') {
       this.masterVolume = Math.max(0, Math.min(1, params.MasterVolume));
     }
     if (!this.ctx) return;
 
+    this.updateGlobalLfoWave();
+    if ((this.params.SynthModel ?? 0) < 0.5) {
+      for (let i = 6; i < this.voices.length; i++) {
+        this.voices[i].stopImmediate();
+      }
+    }
+
     if (this.masterGain) {
       this.masterGain.gain.setTargetAtTime(this.masterVolume * 0.85, this.ctx.currentTime, 0.02);
     }
     if (this.hpfFilter) {
-      this.hpfFilter.frequency.setTargetAtTime(getHpfFrequency(params.HPF), this.ctx.currentTime, 0.02);
+      this.hpfFilter.frequency.setTargetAtTime(getHpfFrequency(this.params.HPF), this.ctx.currentTime, 0.02);
     }
     if (this.globalLfoOsc) {
-      this.globalLfoOsc.frequency.setTargetAtTime(getLfoRateHz(params.LFORate), this.ctx.currentTime, 0.015);
+      this.globalLfoOsc.frequency.setTargetAtTime(getLfoRateHz(this.params.LFORate), this.ctx.currentTime, 0.015);
     }
     this.updateChorusMode();
     this.updateDelayMode();
@@ -1604,9 +1961,10 @@ export class HeraSynthesizerEngine {
         v.updateOscillators(this.params, this.pitchBendSemitones, false);
         v.updateLfoDepth(this.params, this.modWheelAmount);
         v.updateFilter(this.params, this.pitchBendSemitones);
-        v.updateVolume(params.VCADepth);
+        v.updateVolume(this.params.VCADepth);
       }
     });
+    this.broadcastVoiceStatus();
   }
 
   getParameters(): HeraParameters {
@@ -1619,7 +1977,9 @@ export class HeraSynthesizerEngine {
 
   private broadcastVoiceStatus() {
     if (!this.onVoicesChange) return;
-    const statuses: VoiceStatus[] = this.voices.map(v => ({
+    const isJp8 = (this.params.SynthModel ?? 0) >= 0.5;
+    const limit = isJp8 ? 8 : 6;
+    const statuses: VoiceStatus[] = this.voices.slice(0, limit).map(v => ({
       id: v.id,
       note: v.note,
       freq: v.baseFreq,

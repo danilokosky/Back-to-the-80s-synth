@@ -125,7 +125,7 @@ class MainActivity : ComponentActivity() {
         // Start Native C++ AAudio Engine
         NativeSynthBridge.initEngine()
         for ((p, v) in paramStateMap) {
-            if (p.id in 0..36) {
+            if (p.id in 0..36 || p.id in 42..62) {
                 NativeSynthBridge.setParameter(p.id, v)
             }
         }
@@ -148,7 +148,7 @@ class MainActivity : ComponentActivity() {
             },
             onParamChanged = { param, value ->
                 paramStateMap[param] = value
-                if (param.id in 0..36) {
+                if (param.id in 0..36 || param.id in 42..62) {
                     NativeSynthBridge.setParameter(param.id, value)
                 }
                 val mgr = midiControllerManager
@@ -191,7 +191,7 @@ class MainActivity : ComponentActivity() {
                         onNotifyUiChanged = { uiRevision++ },
                         onUpdateParam = { param, value ->
                             paramStateMap[param] = value
-                            if (param.id in 0..36) {
+                            if (param.id in 0..36 || param.id in 42..62) {
                                 NativeSynthBridge.setParameter(param.id, value)
                             }
                         },
@@ -252,10 +252,12 @@ fun HeraJunoNativeScreen(
     onPanicAllNotesOff: () -> Unit
 ) {
     val context = LocalContext.current
+    val isJupiter8 = (paramState[SynthParam.SynthModel] ?: 0f) >= 0.5f
+    val activeFactoryPresets = if (isJupiter8) PresetRepository.JUPITER8_FACTORY_PRESETS else PresetRepository.FACTORY_PRESETS
     var userPresets by remember { mutableStateOf(PresetRepository.loadUserPresets(context)) }
-    val allPresets = remember(userPresets) { PresetRepository.FACTORY_PRESETS + userPresets }
+    val allPresets = remember(userPresets, isJupiter8) { activeFactoryPresets + userPresets }
     var currentPresetIndex by remember { mutableIntStateOf(0) }
-    val currentPreset = allPresets.getOrElse(currentPresetIndex) { PresetRepository.FACTORY_PRESETS.first() }
+    val currentPreset = allPresets.getOrElse(currentPresetIndex) { activeFactoryPresets.first() }
 
     // Arpeggiator State (Full Arpeggiator section is toggled via the ARP button next to Presets)
     var arpEnabled by remember { mutableStateOf(false) }
@@ -487,8 +489,28 @@ fun HeraJunoNativeScreen(
                             .fillMaxSize()
                             .verticalScroll(mainVerticalScroll)
                     ) {
-                    // 1. TOP ROLAND HEADER BAR (Branding with VOICES next to JUNO-60 + Scope + Distinct MIDI & Master Controls)
+                    // 1. TOP ROLAND HEADER BAR (Branding with JUNO-60 / JUPITER-8 Dual-Synth switch + VOICES + Scope + MIDI & Master Controls)
                     TopHeaderBar(
+                        isJupiter8 = isJupiter8,
+                        onSelectSynthModel = { selectJp8 ->
+                            val targetModel = if (selectJp8) 1f else 0f
+                            if (((paramState[SynthParam.SynthModel] ?: 0f) >= 0.5f) != selectJp8) {
+                                onUpdateParam(SynthParam.SynthModel, targetModel)
+                                val bank = if (selectJp8) PresetRepository.JUPITER8_FACTORY_PRESETS else PresetRepository.FACTORY_PRESETS
+                                currentPresetIndex = 0
+                                val firstPreset = bank.first()
+                                for ((p, v) in firstPreset.values) {
+                                    if (p == SynthParam.MasterVolume ||
+                                        p == SynthParam.ReverbEnabled ||
+                                        p == SynthParam.ReverbType ||
+                                        p == SynthParam.ReverbTime ||
+                                        p == SynthParam.ReverbDecay ||
+                                        p == SynthParam.ReverbMix
+                                    ) continue
+                                    onUpdateParam(p, v)
+                                }
+                            }
+                        },
                         masterVolume = paramState[SynthParam.MasterVolume] ?: 0.8f,
                         isMasterMuted = isMasterMuted,
                         onToggleMasterMute = {
@@ -1199,8 +1221,9 @@ private fun AtariCartridgeBadgeIcon(modifier: Modifier = Modifier) {
  *   4. TECLADO & PANIC buttons
  */
 @Composable
-private fun LiveVoiceIndicatorsBox() {
+private fun LiveVoiceIndicatorsBox(isJupiter8: Boolean) {
     var activeVoiceCount by remember { mutableIntStateOf(0) }
+    val maxVoices = if (isJupiter8) 8 else 6
     LaunchedEffect(Unit) {
         while (true) {
             val count = NativeSynthBridge.getActiveVoicesCount()
@@ -1219,7 +1242,7 @@ private fun LiveVoiceIndicatorsBox() {
             .padding(horizontal = 5.dp, vertical = 1.5.dp)
     ) {
         Text(
-            text = "VOICES",
+            text = if (isJupiter8) "8-VOICE" else "6-VOICE",
             color = Color(0xFF9CA3AF),
             fontSize = 6.5.sp,
             fontFamily = FontFamily.Monospace,
@@ -1227,19 +1250,20 @@ private fun LiveVoiceIndicatorsBox() {
             letterSpacing = 0.6.sp
         )
         Row(
-            horizontalArrangement = Arrangement.spacedBy(3.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.5.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            for (v in 0 until 6) {
+            for (v in 0 until maxVoices) {
                 val lit = v < activeVoiceCount
+                val ledColor = if (isJupiter8) JunoOrange else JunoRed
                 Box(
                     modifier = Modifier
                         .size(5.dp)
                         .clip(CircleShape)
-                        .background(if (lit) JunoRed else Color(0xFF232734))
+                        .background(if (lit) ledColor else Color(0xFF232734))
                         .border(
                             0.5.dp,
-                            if (lit) Color(0xFFFCA5A5) else Color(0xFF374151),
+                            if (lit) Color(0xFFFED7AA) else Color(0xFF374151),
                             CircleShape
                         )
                 )
@@ -1298,6 +1322,8 @@ private fun LiveOscilloscopeBox() {
 
 @Composable
 private fun TopHeaderBar(
+    isJupiter8: Boolean,
+    onSelectSynthModel: (Boolean) -> Unit,
     masterVolume: Float,
     isMasterMuted: Boolean,
     onToggleMasterMute: () -> Unit,
@@ -1330,7 +1356,7 @@ private fun TopHeaderBar(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        // LEFT: App Branding (HERA + JUNO-60 + VOICES right next to JUNO-60, and stretched description below) + CRT Oscilloscope
+        // LEFT: App Branding (HERA + Dual-Synth JUNO-60 / JUPITER-8 Switch + VOICES, and stretched description below) + CRT Oscilloscope
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(7.dp)
@@ -1350,29 +1376,59 @@ private fun TopHeaderBar(
                         fontWeight = FontWeight.Black,
                         letterSpacing = 1.4.sp
                     )
-                    Box(
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
                         modifier = Modifier
-                            .clip(RoundedCornerShape(3.dp))
-                            .background(Color(0xFFDC2626))
-                            .padding(horizontal = 4.dp, vertical = 1.dp)
+                            .background(Color(0xFF090B10), RoundedCornerShape(3.5.dp))
+                            .border(1.dp, Color(0xFF283042), RoundedCornerShape(3.5.dp))
+                            .padding(1.5.dp)
                     ) {
-                        Text(
-                            text = "JUNO-60",
-                            color = Color.White,
-                            fontSize = 7.5.sp,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.ExtraBold,
-                            letterSpacing = 0.7.sp
-                        )
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(2.5.dp))
+                                .background(if (!isJupiter8) Color(0xFFDC2626) else Color(0xFF141822))
+                                .clickable { onSelectSynthModel(false) }
+                                .padding(horizontal = 4.5.dp, vertical = 1.5.dp)
+                        ) {
+                            Text(
+                                text = "JUNO-60",
+                                color = if (!isJupiter8) Color.White else Color(0xFF9CA3AF),
+                                fontSize = 7.2.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = 0.6.sp
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(2.5.dp))
+                                .background(if (isJupiter8) JunoOrange else Color(0xFF141822))
+                                .clickable { onSelectSynthModel(true) }
+                                .padding(horizontal = 4.5.dp, vertical = 1.5.dp)
+                        ) {
+                            Text(
+                                text = "JUPITER-8",
+                                color = if (isJupiter8) Color.White else Color(0xFF9CA3AF),
+                                fontSize = 7.2.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = 0.6.sp
+                            )
+                        }
                     }
 
-                    // 6-Voice Polyphony Indicator isolated in its own leaf composable
-                    LiveVoiceIndicatorsBox()
+                    // 6-Voice / 8-Voice Polyphony Indicator isolated in its own leaf composable
+                    LiveVoiceIndicatorsBox(isJupiter8 = isJupiter8)
                 }
 
-                // Subtitle stretched slightly underneath so it aligns cleanly with HERA JUNO-60 + VOICES
+                // Subtitle stretched slightly underneath so it aligns cleanly with HERA JUNO-60/JUPITER-8 + VOICES
                 Text(
-                    text = "POLYPHONIC SYNTHESIZER • 6 VOICES • STEREO BBD CHORUS",
+                    text = if (isJupiter8) {
+                        "POLYPHONIC SYNTHESIZER • 8 VOICES • DUAL VCO • 12/24dB VCF"
+                    } else {
+                        "POLYPHONIC SYNTHESIZER • 6 VOICES • STEREO BBD CHORUS"
+                    },
                     color = Color(0xFF9CA3AF),
                     fontSize = 6.5.sp,
                     fontFamily = FontFamily.Monospace,
@@ -3038,67 +3094,86 @@ private fun SynthRackSectionCard(
     onNotifyUiChanged: () -> Unit
 ) {
     val rev = uiRevision
+    val isJupiter8 = (paramState[SynthParam.SynthModel] ?: 0f) >= 0.5f
     when (section) {
         MidiSection.LFO -> {
             val manTrigActive = (paramState[SynthParam.LFOManualTrig] ?: 0f) >= 0.5f
             SynthModuleCard(
-                title = "LFO",
-                footer = "MODULATOR",
+                title = if (isJupiter8) "JP-8 LFO" else "LFO",
+                footer = if (isJupiter8) "4-WAVE MOD" else "MODULATOR",
                 accentColor = Color(0xFFEAB308)
             ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterVertically),
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     modifier = Modifier.fillMaxHeight()
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(7.dp)
-                    ) {
-                        JunoParamFader(
-                            param = SynthParam.LFORate,
-                            value = paramState[SynthParam.LFORate] ?: 0.6f,
-                            capColor = JunoOrange,
+                    if (isJupiter8) {
+                        SelectorGroupBox(
+                            param = SynthParam.JP8LfoWave,
+                            title = "WAVE",
+                            options = listOf("SIN", "TRI", "SAW", "RND"),
+                            selectedIndex = (paramState[SynthParam.JP8LfoWave] ?: 0f).roundToInt().coerceIn(0, 3),
                             midiManager = midiManager,
                             uiRevision = rev,
-                            faderHeight = 136.dp,
-                            onValueChange = { onUpdateParam(SynthParam.LFORate, it) },
-                            onNotifyUiChanged = onNotifyUiChanged
-                        )
-                        JunoParamFader(
-                            param = SynthParam.LFODelay,
-                            value = paramState[SynthParam.LFODelay] ?: 0.0f,
-                            capColor = JunoOrange,
-                            midiManager = midiManager,
-                            uiRevision = rev,
-                            faderHeight = 136.dp,
-                            onValueChange = { onUpdateParam(SynthParam.LFODelay, it) },
+                            onSelect = { onUpdateParam(SynthParam.JP8LfoWave, it.toFloat()) },
                             onNotifyUiChanged = onNotifyUiChanged
                         )
                     }
-                    JunoParamSwitchWithBadge(
-                        param = SynthParam.LFOManualTrig,
-                        active = manTrigActive,
-                        activeLabel = "MAN TRIG",
-                        inactiveLabel = "MAN TRIG",
-                        activeColor = JunoAmberLed,
-                        midiManager = midiManager,
-                        uiRevision = rev,
-                        compact = false,
-                        onToggle = {
-                            onUpdateParam(SynthParam.LFOManualTrig, if (manTrigActive) 0f else 1f)
-                        },
-                        onNotifyUiChanged = onNotifyUiChanged
-                    )
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterVertically),
+                        modifier = Modifier.fillMaxHeight()
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(7.dp)
+                        ) {
+                            JunoParamFader(
+                                param = SynthParam.LFORate,
+                                value = paramState[SynthParam.LFORate] ?: 0.6f,
+                                capColor = JunoOrange,
+                                midiManager = midiManager,
+                                uiRevision = rev,
+                                faderHeight = 136.dp,
+                                onValueChange = { onUpdateParam(SynthParam.LFORate, it) },
+                                onNotifyUiChanged = onNotifyUiChanged
+                            )
+                            JunoParamFader(
+                                param = SynthParam.LFODelay,
+                                value = paramState[SynthParam.LFODelay] ?: 0.0f,
+                                capColor = JunoOrange,
+                                midiManager = midiManager,
+                                uiRevision = rev,
+                                faderHeight = 136.dp,
+                                onValueChange = { onUpdateParam(SynthParam.LFODelay, it) },
+                                onNotifyUiChanged = onNotifyUiChanged
+                            )
+                        }
+                        JunoParamSwitchWithBadge(
+                            param = SynthParam.LFOManualTrig,
+                            active = manTrigActive,
+                            activeLabel = "MAN TRIG",
+                            inactiveLabel = "MAN TRIG",
+                            activeColor = JunoAmberLed,
+                            midiManager = midiManager,
+                            uiRevision = rev,
+                            compact = false,
+                            onToggle = {
+                                onUpdateParam(SynthParam.LFOManualTrig, if (manTrigActive) 0f else 1f)
+                            },
+                            onNotifyUiChanged = onNotifyUiChanged
+                        )
+                    }
                 }
             }
         }
 
         MidiSection.DCO -> {
             SynthModuleCard(
-                title = "DCO (OSCILLATOR)",
-                footer = "POLYBLEP ANALOG WAVEFORMS",
-                accentColor = JunoRed
+                title = if (isJupiter8) "VCO-1 & VCO-2 (JUPITER-8)" else "DCO (OSCILLATOR)",
+                footer = if (isJupiter8) "DUAL VCO • X-MOD • HARD SYNC" else "POLYBLEP ANALOG WAVEFORMS",
+                accentColor = if (isJupiter8) JunoOrange else JunoRed
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -3146,60 +3221,229 @@ private fun SynthRackSectionCard(
                         )
                     }
 
-                    JunoParamFader(
-                        param = SynthParam.DCOPitchModDepth,
-                        value = paramState[SynthParam.DCOPitchModDepth] ?: 0f,
-                        capColor = JunoRed,
-                        midiManager = midiManager,
-                        uiRevision = rev,
-                        onValueChange = { onUpdateParam(SynthParam.DCOPitchModDepth, it) },
-                        onNotifyUiChanged = onNotifyUiChanged
-                    )
-                    JunoParamFader(
-                        param = SynthParam.DCOPWMDepth,
-                        value = paramState[SynthParam.DCOPWMDepth] ?: 0.3f,
-                        capColor = JunoRed,
-                        midiManager = midiManager,
-                        uiRevision = rev,
-                        onValueChange = { onUpdateParam(SynthParam.DCOPWMDepth, it) },
-                        onNotifyUiChanged = onNotifyUiChanged
-                    )
-                    JunoParamFader(
-                        param = SynthParam.DCOPulseLevel,
-                        value = paramState[SynthParam.DCOPulseLevel] ?: 0f,
-                        capColor = JunoRed,
-                        midiManager = midiManager,
-                        uiRevision = rev,
-                        onValueChange = { onUpdateParam(SynthParam.DCOPulseLevel, it) },
-                        onNotifyUiChanged = onNotifyUiChanged
-                    )
-                    JunoParamFader(
-                        param = SynthParam.DCOSawLevel,
-                        value = paramState[SynthParam.DCOSawLevel] ?: 1f,
-                        capColor = JunoRed,
-                        midiManager = midiManager,
-                        uiRevision = rev,
-                        onValueChange = { onUpdateParam(SynthParam.DCOSawLevel, it) },
-                        onNotifyUiChanged = onNotifyUiChanged
-                    )
-                    JunoParamFader(
-                        param = SynthParam.DCOSubLevel,
-                        value = paramState[SynthParam.DCOSubLevel] ?: 0f,
-                        capColor = JunoRed,
-                        midiManager = midiManager,
-                        uiRevision = rev,
-                        onValueChange = { onUpdateParam(SynthParam.DCOSubLevel, it) },
-                        onNotifyUiChanged = onNotifyUiChanged
-                    )
-                    JunoParamFader(
-                        param = SynthParam.DCONoiseLevel,
-                        value = paramState[SynthParam.DCONoiseLevel] ?: 0f,
-                        capColor = JunoRed,
-                        midiManager = midiManager,
-                        uiRevision = rev,
-                        onValueChange = { onUpdateParam(SynthParam.DCONoiseLevel, it) },
-                        onNotifyUiChanged = onNotifyUiChanged
-                    )
+                    if (isJupiter8) {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier
+                                .wrapContentHeight()
+                                .background(Color(0xFF0A0D14), RoundedCornerShape(4.dp))
+                                .border(1.dp, Color(0xFF1A2232), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 3.dp, vertical = 4.dp)
+                        ) {
+                            SelectorGroupBox(
+                                param = SynthParam.JP8VoiceMode,
+                                title = "ASSIGN",
+                                options = listOf("PL1", "PL2", "UNI", "SOL"),
+                                selectedIndex = (paramState[SynthParam.JP8VoiceMode] ?: 0f).roundToInt().coerceIn(0, 3),
+                                midiManager = midiManager,
+                                uiRevision = rev,
+                                onSelect = { onUpdateParam(SynthParam.JP8VoiceMode, it.toFloat()) },
+                                onNotifyUiChanged = onNotifyUiChanged
+                            )
+                            SelectorGroupBox(
+                                param = SynthParam.JP8Vco1Wave,
+                                title = "VCO-1",
+                                options = listOf("TRI", "SAW", "PLS", "SQR"),
+                                selectedIndex = (paramState[SynthParam.JP8Vco1Wave] ?: 1f).roundToInt().coerceIn(0, 3),
+                                midiManager = midiManager,
+                                uiRevision = rev,
+                                onSelect = { onUpdateParam(SynthParam.JP8Vco1Wave, it.toFloat()) },
+                                onNotifyUiChanged = onNotifyUiChanged
+                            )
+                            SelectorGroupBox(
+                                param = SynthParam.JP8Vco2Wave,
+                                title = "VCO-2",
+                                options = listOf("SAW", "PLS", "SIN", "LFO"),
+                                selectedIndex = (paramState[SynthParam.JP8Vco2Wave] ?: 0f).roundToInt().coerceIn(0, 3),
+                                midiManager = midiManager,
+                                uiRevision = rev,
+                                onSelect = { onUpdateParam(SynthParam.JP8Vco2Wave, it.toFloat()) },
+                                onNotifyUiChanged = onNotifyUiChanged
+                            )
+                        }
+
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier
+                                .wrapContentHeight()
+                                .background(Color(0xFF0A0D14), RoundedCornerShape(4.dp))
+                                .border(1.dp, Color(0xFF1A2232), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 3.dp, vertical = 4.dp)
+                        ) {
+                            SelectorGroupBox(
+                                param = SynthParam.JP8Vco2Range,
+                                title = "VCO2 OCT",
+                                options = listOf("-1", "0", "+1", "+5th"),
+                                selectedIndex = (paramState[SynthParam.JP8Vco2Range] ?: 1f).roundToInt().coerceIn(0, 3),
+                                midiManager = midiManager,
+                                uiRevision = rev,
+                                onSelect = { onUpdateParam(SynthParam.JP8Vco2Range, it.toFloat()) },
+                                onNotifyUiChanged = onNotifyUiChanged
+                            )
+                            SelectorGroupBox(
+                                param = SynthParam.JP8PitchEnvTarget,
+                                title = "MOD DEST",
+                                options = listOf("VCO2", "VCO1", "BOTH"),
+                                selectedIndex = (paramState[SynthParam.JP8PitchEnvTarget] ?: 0f).roundToInt().coerceIn(0, 2),
+                                midiManager = midiManager,
+                                uiRevision = rev,
+                                onSelect = { onUpdateParam(SynthParam.JP8PitchEnvTarget, it.toFloat()) },
+                                onNotifyUiChanged = onNotifyUiChanged
+                            )
+                            val syncOn = (paramState[SynthParam.JP8VcoSync] ?: 0f) >= 0.5f
+                            JunoParamSwitchWithBadge(
+                                param = SynthParam.JP8VcoSync,
+                                active = syncOn,
+                                activeLabel = "SYNC ON",
+                                inactiveLabel = "SYNC OFF",
+                                activeColor = JunoOrange,
+                                midiManager = midiManager,
+                                uiRevision = rev,
+                                compact = true,
+                                onToggle = { onUpdateParam(SynthParam.JP8VcoSync, if (syncOn) 0f else 1f) },
+                                onNotifyUiChanged = onNotifyUiChanged
+                            )
+                        }
+
+                        JunoParamFader(
+                            param = SynthParam.JP8CrossMod,
+                            value = paramState[SynthParam.JP8CrossMod] ?: 0f,
+                            capColor = JunoOrange,
+                            midiManager = midiManager,
+                            uiRevision = rev,
+                            onValueChange = { onUpdateParam(SynthParam.JP8CrossMod, it) },
+                            onNotifyUiChanged = onNotifyUiChanged
+                        )
+                        JunoParamFader(
+                            param = SynthParam.JP8PitchEnvDepth,
+                            value = (((paramState[SynthParam.JP8PitchEnvDepth] ?: 0f) + 1f) * 0.5f).coerceIn(0f, 1f),
+                            capColor = JunoOrange,
+                            midiManager = midiManager,
+                            uiRevision = rev,
+                            onValueChange = { norm -> onUpdateParam(SynthParam.JP8PitchEnvDepth, norm * 2f - 1f) },
+                            onNotifyUiChanged = onNotifyUiChanged
+                        )
+                        JunoParamFader(
+                            param = SynthParam.JP8Vco2Detune,
+                            value = (((paramState[SynthParam.JP8Vco2Detune] ?: 0.08f) + 1f) * 0.5f).coerceIn(0f, 1f),
+                            capColor = JunoOrange,
+                            midiManager = midiManager,
+                            uiRevision = rev,
+                            onValueChange = { norm -> onUpdateParam(SynthParam.JP8Vco2Detune, norm * 2f - 1f) },
+                            onNotifyUiChanged = onNotifyUiChanged
+                        )
+                        JunoParamFader(
+                            param = SynthParam.JP8Vco1Level,
+                            value = paramState[SynthParam.JP8Vco1Level] ?: 0.85f,
+                            capColor = JunoRed,
+                            midiManager = midiManager,
+                            uiRevision = rev,
+                            onValueChange = { onUpdateParam(SynthParam.JP8Vco1Level, it) },
+                            onNotifyUiChanged = onNotifyUiChanged
+                        )
+                        JunoParamFader(
+                            param = SynthParam.JP8Vco2Level,
+                            value = paramState[SynthParam.JP8Vco2Level] ?: 0.75f,
+                            capColor = JunoRed,
+                            midiManager = midiManager,
+                            uiRevision = rev,
+                            onValueChange = { onUpdateParam(SynthParam.JP8Vco2Level, it) },
+                            onNotifyUiChanged = onNotifyUiChanged
+                        )
+                        JunoParamFader(
+                            param = SynthParam.DCOPitchModDepth,
+                            value = paramState[SynthParam.DCOPitchModDepth] ?: 0f,
+                            capColor = JunoRed,
+                            midiManager = midiManager,
+                            uiRevision = rev,
+                            onValueChange = { onUpdateParam(SynthParam.DCOPitchModDepth, it) },
+                            onNotifyUiChanged = onNotifyUiChanged
+                        )
+                        JunoParamFader(
+                            param = SynthParam.DCOPWMDepth,
+                            value = paramState[SynthParam.DCOPWMDepth] ?: 0.3f,
+                            capColor = JunoRed,
+                            midiManager = midiManager,
+                            uiRevision = rev,
+                            onValueChange = { onUpdateParam(SynthParam.DCOPWMDepth, it) },
+                            onNotifyUiChanged = onNotifyUiChanged
+                        )
+                        JunoParamFader(
+                            param = SynthParam.DCOSubLevel,
+                            value = paramState[SynthParam.DCOSubLevel] ?: 0f,
+                            capColor = JunoRed,
+                            midiManager = midiManager,
+                            uiRevision = rev,
+                            onValueChange = { onUpdateParam(SynthParam.DCOSubLevel, it) },
+                            onNotifyUiChanged = onNotifyUiChanged
+                        )
+                        JunoParamFader(
+                            param = SynthParam.DCONoiseLevel,
+                            value = paramState[SynthParam.DCONoiseLevel] ?: 0f,
+                            capColor = JunoRed,
+                            midiManager = midiManager,
+                            uiRevision = rev,
+                            onValueChange = { onUpdateParam(SynthParam.DCONoiseLevel, it) },
+                            onNotifyUiChanged = onNotifyUiChanged
+                        )
+                    } else {
+                        JunoParamFader(
+                            param = SynthParam.DCOPitchModDepth,
+                            value = paramState[SynthParam.DCOPitchModDepth] ?: 0f,
+                            capColor = JunoRed,
+                            midiManager = midiManager,
+                            uiRevision = rev,
+                            onValueChange = { onUpdateParam(SynthParam.DCOPitchModDepth, it) },
+                            onNotifyUiChanged = onNotifyUiChanged
+                        )
+                        JunoParamFader(
+                            param = SynthParam.DCOPWMDepth,
+                            value = paramState[SynthParam.DCOPWMDepth] ?: 0.3f,
+                            capColor = JunoRed,
+                            midiManager = midiManager,
+                            uiRevision = rev,
+                            onValueChange = { onUpdateParam(SynthParam.DCOPWMDepth, it) },
+                            onNotifyUiChanged = onNotifyUiChanged
+                        )
+                        JunoParamFader(
+                            param = SynthParam.DCOPulseLevel,
+                            value = paramState[SynthParam.DCOPulseLevel] ?: 0f,
+                            capColor = JunoRed,
+                            midiManager = midiManager,
+                            uiRevision = rev,
+                            onValueChange = { onUpdateParam(SynthParam.DCOPulseLevel, it) },
+                            onNotifyUiChanged = onNotifyUiChanged
+                        )
+                        JunoParamFader(
+                            param = SynthParam.DCOSawLevel,
+                            value = paramState[SynthParam.DCOSawLevel] ?: 1f,
+                            capColor = JunoRed,
+                            midiManager = midiManager,
+                            uiRevision = rev,
+                            onValueChange = { onUpdateParam(SynthParam.DCOSawLevel, it) },
+                            onNotifyUiChanged = onNotifyUiChanged
+                        )
+                        JunoParamFader(
+                            param = SynthParam.DCOSubLevel,
+                            value = paramState[SynthParam.DCOSubLevel] ?: 0f,
+                            capColor = JunoRed,
+                            midiManager = midiManager,
+                            uiRevision = rev,
+                            onValueChange = { onUpdateParam(SynthParam.DCOSubLevel, it) },
+                            onNotifyUiChanged = onNotifyUiChanged
+                        )
+                        JunoParamFader(
+                            param = SynthParam.DCONoiseLevel,
+                            value = paramState[SynthParam.DCONoiseLevel] ?: 0f,
+                            capColor = JunoRed,
+                            midiManager = midiManager,
+                            uiRevision = rev,
+                            onValueChange = { onUpdateParam(SynthParam.DCONoiseLevel, it) },
+                            onNotifyUiChanged = onNotifyUiChanged
+                        )
+                    }
                 }
             }
         }
@@ -3224,8 +3468,8 @@ private fun SynthRackSectionCard(
 
         MidiSection.VCF -> {
             SynthModuleCard(
-                title = "VCF (FILTER)",
-                footer = "24dB/OCT RESONANT OTA",
+                title = if (isJupiter8) "VCF (12dB / 24dB)" else "VCF (FILTER)",
+                footer = if (isJupiter8) "ROLAND IR3109 MULTIMODE" else "24dB/OCT RESONANT OTA",
                 accentColor = Color(0xFF22D3EE)
             ) {
                 Row(
@@ -3233,6 +3477,38 @@ private fun SynthRackSectionCard(
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
                     modifier = Modifier.fillMaxHeight()
                 ) {
+                    if (isJupiter8) {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterVertically),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier
+                                .wrapContentHeight()
+                                .background(Color(0xFF0A0D14), RoundedCornerShape(4.dp))
+                                .border(1.dp, Color(0xFF1A2232), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 3.dp, vertical = 4.dp)
+                        ) {
+                            SelectorGroupBox(
+                                param = SynthParam.JP8VcfSlope,
+                                title = "SLOPE",
+                                options = listOf("24dB", "12dB"),
+                                selectedIndex = (paramState[SynthParam.JP8VcfSlope] ?: 0f).roundToInt().coerceIn(0, 1),
+                                midiManager = midiManager,
+                                uiRevision = rev,
+                                onSelect = { onUpdateParam(SynthParam.JP8VcfSlope, it.toFloat()) },
+                                onNotifyUiChanged = onNotifyUiChanged
+                            )
+                            SelectorGroupBox(
+                                param = SynthParam.JP8VcfEnvSource,
+                                title = "ENV SRC",
+                                options = listOf("ENV2", "ENV1"),
+                                selectedIndex = (paramState[SynthParam.JP8VcfEnvSource] ?: 0f).roundToInt().coerceIn(0, 1),
+                                midiManager = midiManager,
+                                uiRevision = rev,
+                                onSelect = { onUpdateParam(SynthParam.JP8VcfEnvSource, it.toFloat()) },
+                                onNotifyUiChanged = onNotifyUiChanged
+                            )
+                        }
+                    }
                     JunoParamFader(
                         param = SynthParam.VCFCutoff,
                         value = paramState[SynthParam.VCFCutoff] ?: 0.7f,
@@ -3294,7 +3570,7 @@ private fun SynthRackSectionCard(
         MidiSection.VCA -> {
             SynthModuleCard(
                 title = "VCA",
-                footer = "AMP",
+                footer = if (isJupiter8) "AMP + LFO AM" else "AMP",
                 accentColor = JunoOrange
             ) {
                 Row(
@@ -3321,14 +3597,25 @@ private fun SynthRackSectionCard(
                         onValueChange = { onUpdateParam(SynthParam.VCADepth, it) },
                         onNotifyUiChanged = onNotifyUiChanged
                     )
+                    if (isJupiter8) {
+                        JunoParamFader(
+                            param = SynthParam.JP8VcaLfoDepth,
+                            value = paramState[SynthParam.JP8VcaLfoDepth] ?: 0f,
+                            capColor = JunoOrange,
+                            midiManager = midiManager,
+                            uiRevision = rev,
+                            onValueChange = { onUpdateParam(SynthParam.JP8VcaLfoDepth, it) },
+                            onNotifyUiChanged = onNotifyUiChanged
+                        )
+                    }
                 }
             }
         }
 
         MidiSection.ENV -> {
             SynthModuleCard(
-                title = "ENV (ADSR)",
-                footer = "EXPONENTIAL ADSR",
+                title = if (isJupiter8) "ENV-1 & ENV-2" else "ENV (ADSR)",
+                footer = if (isJupiter8) "DUAL ADSR GENERATOR" else "EXPONENTIAL ADSR",
                 accentColor = Color(0xFFFBBF24)
             ) {
                 Row(
@@ -3336,6 +3623,54 @@ private fun SynthRackSectionCard(
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
                     modifier = Modifier.fillMaxHeight()
                 ) {
+                    if (isJupiter8) {
+                        SelectorGroupBox(
+                            param = SynthParam.JP8Env1Polarity,
+                            title = "ENV1 POL",
+                            options = listOf("NORM", "INV"),
+                            selectedIndex = (paramState[SynthParam.JP8Env1Polarity] ?: 0f).roundToInt().coerceIn(0, 1),
+                            midiManager = midiManager,
+                            uiRevision = rev,
+                            onSelect = { onUpdateParam(SynthParam.JP8Env1Polarity, it.toFloat()) },
+                            onNotifyUiChanged = onNotifyUiChanged
+                        )
+                        JunoParamFader(
+                            param = SynthParam.JP8Env1Attack,
+                            value = paramState[SynthParam.JP8Env1Attack] ?: 0.01f,
+                            capColor = JunoRed,
+                            midiManager = midiManager,
+                            uiRevision = rev,
+                            onValueChange = { onUpdateParam(SynthParam.JP8Env1Attack, it) },
+                            onNotifyUiChanged = onNotifyUiChanged
+                        )
+                        JunoParamFader(
+                            param = SynthParam.JP8Env1Decay,
+                            value = paramState[SynthParam.JP8Env1Decay] ?: 0.35f,
+                            capColor = JunoRed,
+                            midiManager = midiManager,
+                            uiRevision = rev,
+                            onValueChange = { onUpdateParam(SynthParam.JP8Env1Decay, it) },
+                            onNotifyUiChanged = onNotifyUiChanged
+                        )
+                        JunoParamFader(
+                            param = SynthParam.JP8Env1Sustain,
+                            value = paramState[SynthParam.JP8Env1Sustain] ?: 0f,
+                            capColor = JunoRed,
+                            midiManager = midiManager,
+                            uiRevision = rev,
+                            onValueChange = { onUpdateParam(SynthParam.JP8Env1Sustain, it) },
+                            onNotifyUiChanged = onNotifyUiChanged
+                        )
+                        JunoParamFader(
+                            param = SynthParam.JP8Env1Release,
+                            value = paramState[SynthParam.JP8Env1Release] ?: 0.25f,
+                            capColor = JunoRed,
+                            midiManager = midiManager,
+                            uiRevision = rev,
+                            onValueChange = { onUpdateParam(SynthParam.JP8Env1Release, it) },
+                            onNotifyUiChanged = onNotifyUiChanged
+                        )
+                    }
                     JunoParamFader(
                         param = SynthParam.ENVAttack,
                         value = paramState[SynthParam.ENVAttack] ?: 0.4f,

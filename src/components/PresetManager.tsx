@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { FACTORY_PRESETS, HeraPreset } from '../presets/factoryPresets';
+import { JUPITER8_FACTORY_PRESETS } from '../presets/jupiter8Presets';
 import { HeraParameters, DEFAULT_PARAMETERS } from '../types/synth';
 import { MidiLearnBadge } from './MidiLearnBadge';
 import {
@@ -111,9 +112,30 @@ export const PresetManager: React.FC<PresetManagerProps> = ({
     }, 3200);
   };
 
+  const isJp8 = (currentParams.SynthModel ?? 0) >= 0.5;
+  const activeFactoryPresets = isJp8 ? JUPITER8_FACTORY_PRESETS : FACTORY_PRESETS;
+  const prevModelRef = useRef<boolean>(isJp8);
+
   const allPresets = useMemo(() => {
-    return [...FACTORY_PRESETS, ...customPresets];
-  }, [customPresets]);
+    const modelCustom = customPresets.filter((p) => {
+      const pIsJp8 = ((p.params as HeraParameters).SynthModel ?? 0) >= 0.5;
+      return pIsJp8 === isJp8;
+    });
+    return [...activeFactoryPresets, ...modelCustom];
+  }, [activeFactoryPresets, customPresets, isJp8]);
+
+  // Automatically load the first preset of the selected synth model when switching JUNO-60 <-> JUPITER-8
+  useEffect(() => {
+    if (prevModelRef.current !== isJp8) {
+      prevModelRef.current = isJp8;
+      const firstPreset = isJp8 ? JUPITER8_FACTORY_PRESETS[0] : FACTORY_PRESETS[0];
+      if (firstPreset) {
+        setSelectedId(firstPreset.id);
+        setPresetName(firstPreset.name);
+        onSelectPreset(firstPreset.params as HeraParameters, firstPreset.name);
+      }
+    }
+  }, [isJp8, onSelectPreset]);
 
   const filteredPresets = useMemo(() => {
     return allPresets.filter((p) => {
@@ -122,13 +144,13 @@ export const PresetManager: React.FC<PresetManagerProps> = ({
 
       if (filterCategory === 'all') return true;
       const lower = p.name.toLowerCase();
-      if (filterCategory === 'strings') return lower.includes('string');
-      if (filterCategory === 'organ') return lower.includes('organ');
-      if (filterCategory === 'brass') return lower.includes('brass');
-      if (filterCategory === 'bass') return lower.includes('bass');
+      if (filterCategory === 'strings') return lower.includes('string') || lower.includes('pad');
+      if (filterCategory === 'organ') return lower.includes('organ') || lower.includes('sync') || lower.includes('lead');
+      if (filterCategory === 'brass') return lower.includes('brass') || lower.includes('horn') || lower.includes('jump');
+      if (filterCategory === 'bass') return lower.includes('bass') || lower.includes('arp');
       if (filterCategory === 'piano')
-        return lower.includes('piano') || lower.includes('clav') || lower.includes('harp');
-      if (filterCategory === 'user') return p.id >= 56;
+        return lower.includes('piano') || lower.includes('clav') || lower.includes('harp') || lower.includes('bell');
+      if (filterCategory === 'user') return p.id >= 200;
       return true;
     });
   }, [allPresets, searchQuery, filterCategory]);
@@ -368,9 +390,12 @@ export const PresetManager: React.FC<PresetManagerProps> = ({
     e.target.value = '';
   };
 
-  // Juno-60 Bank and Patch number computation (1-8, 1-7/8)
-  const bankNumber = Math.floor(selectedId / 7) + 1;
-  const patchNumber = (selectedId % 7) + 1;
+  // Juno-60 (8 banks x 7) vs Jupiter-8 (4 banks x 8, 100..131) Bank & Patch number computation
+  const normalizedFactoryIdx = isJp8 && selectedId >= 100 && selectedId < 200 ? selectedId - 100 : selectedId;
+  const isFactoryPreset = selectedId < 200;
+  const patchesPerBank = isJp8 ? 8 : 7;
+  const bankNumber = Math.floor(normalizedFactoryIdx / patchesPerBank) + 1;
+  const patchNumber = (normalizedFactoryIdx % patchesPerBank) + 1;
 
   return (
     <div
@@ -417,7 +442,7 @@ export const PresetManager: React.FC<PresetManagerProps> = ({
             </span>
             <div className="w-8 h-8 sm:w-9 sm:h-8 flex items-center justify-center bg-[#140204] border border-red-950/90 rounded shadow-[inset_0_2px_4px_rgba(0,0,0,0.95)]">
               <span className="inline-flex items-center justify-center w-full h-full font-mono text-base sm:text-lg font-black text-red-500 leading-none text-center tabular-nums drop-shadow-[0_0_8px_rgba(239,68,68,0.9)]">
-                {selectedId < 56 ? String(bankNumber) : 'U'}
+                {isFactoryPreset ? String(bankNumber) : 'U'}
               </span>
             </div>
           </div>
@@ -429,7 +454,7 @@ export const PresetManager: React.FC<PresetManagerProps> = ({
             </span>
             <div className="w-8 h-8 sm:w-9 sm:h-8 flex items-center justify-center bg-[#140204] border border-red-950/90 rounded shadow-[inset_0_2px_4px_rgba(0,0,0,0.95)]">
               <span className="inline-flex items-center justify-center w-full h-full font-mono text-base sm:text-lg font-black text-red-500 leading-none text-center tabular-nums drop-shadow-[0_0_8px_rgba(239,68,68,0.9)]">
-                {selectedId < 56 ? String(patchNumber) : String((selectedId % 9) + 1)}
+                {isFactoryPreset ? String(patchNumber) : String((selectedId % 9) + 1)}
               </span>
             </div>
           </div>
@@ -664,7 +689,7 @@ export const PresetManager: React.FC<PresetManagerProps> = ({
               <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-500" />
               <input
                 type="text"
-                placeholder="Buscar entre os presets do Juno-60..."
+                placeholder={isJp8 ? 'Buscar entre os presets do Jupiter-8...' : 'Buscar entre os presets do Juno-60...'}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full bg-zinc-950 border border-zinc-700/80 rounded pl-6 pr-2 py-1 text-xs font-mono text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-amber-400"
@@ -692,7 +717,7 @@ export const PresetManager: React.FC<PresetManagerProps> = ({
           {/* Quick Select Grid */}
           <div className="max-h-36 overflow-y-auto grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-1 p-1.5 bg-zinc-950 rounded border border-zinc-800 scrollbar-thin">
             {filteredPresets.map((preset) => {
-              const isCustom = preset.id >= 56;
+              const isCustom = preset.id >= 200;
               return (
                 <div
                   key={preset.id}
