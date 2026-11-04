@@ -181,14 +181,17 @@ export const HeraApp: React.FC = () => {
     };
   }, [keepScreenOn]);
 
-  // Responsive viewport dimensions for Faders Section proportional zoom & elongation (max +20%)
+  // Responsive viewport dimensions for Faders Section elongation (max +20%) & Modular Areas of Interest
   const [viewportSize, setViewportSize] = useState<{ width: number; height: number }>(() => ({
     width: typeof window !== 'undefined' ? window.innerWidth : 1280,
     height: typeof window !== 'undefined' ? window.innerHeight : 720,
   }));
   const topHeaderRef = useRef<HTMLDivElement | null>(null);
   const presetBarRef = useRef<HTMLDivElement | null>(null);
+  const lowerDrawerRef = useRef<HTMLDivElement | null>(null);
   const keyboardSectionRef = useRef<HTMLDivElement | null>(null);
+  const isPointerDownRef = useRef<boolean>(false);
+  const isAutoSnappingRef = useRef<boolean>(false);
 
   useEffect(() => {
     const updateSize = () => {
@@ -201,26 +204,111 @@ export const HeraApp: React.FC = () => {
     return () => window.removeEventListener('resize', updateSize);
   }, []);
 
-  const { faderElongation, rackZoomFactor } = (() => {
+  // Soft Magnetic Edge Snap between Area of Interest 1 (Top: Header + Faders + Voicing)
+  // and Area of Interest 2 (Bottom: Voicing + Arpeggiator + Keyboard)
+  useEffect(() => {
+    let snapTimer: number | null = null;
+    let releaseSnapFlagTimer: number | null = null;
+
+    const onPointerDown = () => {
+      isPointerDownRef.current = true;
+      if (snapTimer !== null) {
+        window.clearTimeout(snapTimer);
+        snapTimer = null;
+      }
+    };
+
+    const triggerEdgeMagnetCheck = () => {
+      if (snapTimer !== null) window.clearTimeout(snapTimer);
+      snapTimer = window.setTimeout(() => {
+        if (isPointerDownRef.current || isAutoSnappingRef.current) return;
+        const scrollY = window.scrollY;
+        const vh = window.innerHeight;
+        const docH = document.documentElement.scrollHeight;
+        const maxScroll = Math.max(0, docH - vh);
+        if (maxScroll <= 6) return;
+
+        const magnetZone = Math.min(110, Math.max(24, maxScroll * 0.28));
+
+        // Near Top Edge -> Magnetize softly to Area of Interest 1 (0px)
+        if (scrollY > 2 && scrollY <= magnetZone) {
+          isAutoSnappingRef.current = true;
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+          if (releaseSnapFlagTimer !== null) window.clearTimeout(releaseSnapFlagTimer);
+          releaseSnapFlagTimer = window.setTimeout(() => {
+            isAutoSnappingRef.current = false;
+          }, 420);
+          return;
+        }
+
+        // Near Bottom Edge -> Magnetize softly to Area of Interest 2 (Voicing at top + Arp/Keyboard at bottom)
+        const distFromBottom = maxScroll - scrollY;
+        if (distFromBottom > 2 && distFromBottom <= magnetZone) {
+          isAutoSnappingRef.current = true;
+          window.scrollTo({ top: maxScroll, behavior: 'smooth' });
+          if (releaseSnapFlagTimer !== null) window.clearTimeout(releaseSnapFlagTimer);
+          releaseSnapFlagTimer = window.setTimeout(() => {
+            isAutoSnappingRef.current = false;
+          }, 420);
+        }
+      }, 140);
+    };
+
+    const onPointerUp = () => {
+      isPointerDownRef.current = false;
+      triggerEdgeMagnetCheck();
+    };
+
+    const onScroll = () => {
+      if (!isPointerDownRef.current && !isAutoSnappingRef.current) {
+        triggerEdgeMagnetCheck();
+      }
+    };
+
+    window.addEventListener('pointerdown', onPointerDown, { passive: true });
+    window.addEventListener('pointerup', onPointerUp, { passive: true });
+    window.addEventListener('pointercancel', onPointerUp, { passive: true });
+    window.addEventListener('touchend', onPointerUp, { passive: true });
+    window.addEventListener('scroll', onScroll, { passive: true });
+
+    return () => {
+      if (snapTimer !== null) window.clearTimeout(snapTimer);
+      if (releaseSnapFlagTimer !== null) window.clearTimeout(releaseSnapFlagTimer);
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
+      window.removeEventListener('touchend', onPointerUp);
+      window.removeEventListener('scroll', onScroll);
+    };
+  }, []);
+
+  const { faderElongation, rackZoomFactor, isWidescreenFrame } = (() => {
+    const vw = viewportSize.width;
     const vh = viewportSize.height;
+    const aspect = vh > 0 ? vw / vh : 1.77;
 
     const headerH = topHeaderRef.current?.offsetHeight || 54;
-    const presetAndArpH = presetBarRef.current?.offsetHeight || (isArpSectionOpen ? 108 : 62);
-    // Across ALL screens (Smartphone landscape, Tablet, Samsung DeX, Large Monitors, and TVs):
-    // Prioritize fitting the 3 primary sections in the initial viewport frame:
-    //   1. Top Header Bar
-    //   2. Full Faders, Filters & Effects Synth Rack (elongation strictly capped at +20% = 1.20)
-    //   3. Presets Bar + Complete Arpeggiator Section
-    // Avoid subtracting keyboard height so the Piano Keyboard stays below the fold on initial view
-    // (unless an ultra-tall screen aspect ratio naturally reveals it after the faders reach their +20% cap).
-    const nonRackPrimaryH = headerH + presetAndArpH + 16;
-    const baseRackH = 236;
+    const voicingBarH = presetBarRef.current?.offsetHeight || 56;
+    // Area of Interest 1: Top Header Bar + Faders/Filters/FX Section + Voicing/Preset Bar
+    // Completely independent of whether ARP or Keyboard drawers are open below!
+    // Only the Faders section flexes vertically up to +20% (1.20x); all other elements keep static 1.0x proportion.
+    const nonRackArea1H = headerH + voicingBarH + 16;
+    const baseRackH = 268;
 
-    const targetRackH = Math.max(baseRackH, vh - nonRackPrimaryH);
-    const totalScale = Math.max(1.0, targetRackH / baseRackH);
-    const elongation = Math.min(1.2, Math.max(1.0, totalScale)); // Strictly capped at max +20%
-    const zoom = Math.min(1.38, Math.max(1.0, totalScale / elongation));
-    return { faderElongation: elongation, rackZoomFactor: zoom };
+    const availableForRack = Math.max(baseRackH, vh - nonRackArea1H);
+    const rawElongation = availableForRack / baseRackH;
+    const elongation = Math.min(1.2, Math.max(1.0, rawElongation)); // Strictly capped at max +20% (1.20x)
+
+    // In widescreen viewports (or whenever Area 1 within +20% fader elongation fills the viewport),
+    // Area 1 locks to 100% of the initial screen height so Voicing is never cut off and lower drawers never peek.
+    const maxArea1H = nonRackArea1H + baseRackH * 1.2 + 24;
+    const widescreenFit = aspect >= 1.65 && vh <= maxArea1H;
+
+    return {
+      faderElongation: elongation,
+      rackZoomFactor: 1.0,
+      isWidescreenFrame: widescreenFit,
+    };
   })();
 
   // MIDI
@@ -1920,8 +2008,8 @@ export const HeraApp: React.FC = () => {
       className="min-h-screen h-auto w-full bg-stone-950 text-zinc-100 flex flex-col justify-start"
     >
       {/* Outer Synthetic Chassis with Walnut Wood Cheeks */}
-      <div className="flex-1 max-w-[1440px] w-full mx-auto my-0 sm:my-1.5 px-0.5 sm:px-2 pb-6">
-        <div className="relative rounded-lg shadow-2xl border-2 sm:border-4 border-stone-800 bg-zinc-900 flex flex-col">
+      <div className="flex-1 max-w-[1440px] w-full mx-auto my-0 px-0.5 sm:px-1.5 pb-0">
+        <div className="relative rounded-lg shadow-2xl border-2 border-stone-800 bg-zinc-900 flex flex-col">
           {/* Wood Cheeks (Juno-60) or Brushed Aluminum Side Cheeks (Jupiter-8) */}
           {(params.SynthModel ?? 0) < 0.5 ? (
             <>
@@ -1935,6 +2023,8 @@ export const HeraApp: React.FC = () => {
             </>
           )}
 
+          {/* Area of Interest 1: Top Header + Faders Section + Voicing Bar (100% fit on widescreen) */}
+          <div className={`flex flex-col ${isWidescreenFrame ? 'min-h-[calc(100dvh-4px)] justify-between' : ''}`}>
           {/* Top Roland Header Bar */}
           <div
             ref={topHeaderRef}
@@ -2629,16 +2719,16 @@ export const HeraApp: React.FC = () => {
             <div className="flex-1 bg-blue-600" />
           </div>
 
-          {/* Main Juno-60 Synth Control Panel (Section-only zoom + up to 20% proportional fader elongation) */}
+          {/* Main Synth Control Panel (Up to +20% fader elongation; static 1.0x proportion on all other elements) */}
           <div
             style={
               {
                 '--fader-elongation': faderElongation,
               } as React.CSSProperties
             }
-            className="bg-zinc-900 px-1 py-1 sm:py-2 border-b border-zinc-800 w-full"
+            className="bg-zinc-900 px-1 py-1 sm:py-1.5 border-b border-zinc-800 w-full flex-1 flex flex-col justify-center"
           >
-            <div className="w-full overflow-x-auto pt-3.5 pb-1.5 scrollbar-thin">
+            <div className="w-full overflow-x-auto pt-3 pb-1 scrollbar-thin">
               <div
                 style={{ zoom: rackZoomFactor }}
                 className="min-w-max w-fit flex flex-row items-stretch justify-start gap-1 sm:gap-1.5 px-2 mx-auto"
@@ -2648,10 +2738,12 @@ export const HeraApp: React.FC = () => {
             </div>
           </div>
 
-          {/* Middle Utility Section: Preset Manager + Arpeggiator */}
+          {/* Area of Interest 1 Footer / Area of Interest 2 Header: Voicing & Preset Bar */}
           <div
             ref={presetBarRef}
-            className="p-1.5 sm:p-2 bg-zinc-950 border-b border-zinc-800 flex flex-col gap-1.5"
+            className={`p-1.5 sm:p-2 bg-zinc-950 ${
+              isArpSectionOpen || isKeyboardOpen ? 'border-b border-zinc-800' : 'rounded-b-md'
+            }`}
           >
             <PresetManager
               currentParams={params}
@@ -2679,38 +2771,48 @@ export const HeraApp: React.FC = () => {
                 presetNavRef.current = nav;
               }}
             />
-            <Arpeggiator
-              isOpen={isArpSectionOpen}
-              onArpEnabledChange={setIsArpEnabled}
-              isMidiLearnActive={isMidiLearnActive}
-              selectedLearnAction={selectedLearnAction}
-              mappedCCArpToggle={getMappedActionCC('arpToggle')}
-              mappedCCArpHold={getMappedActionCC('arpHold')}
-              channelLabel={getChannelLabelForAction('arpToggle')}
-              onSelectActionForLearn={handleSelectActionForLearn}
-              onUnmapAction={handleUnmapAction}
-              onRegisterArpActions={(handlers) => {
-                arpActionsRef.current = handlers;
-              }}
-            />
+          </div>
           </div>
 
-          {/* Bottom Virtual Piano Keyboard & Controls */}
-          {isKeyboardOpen && (
-            <div ref={keyboardSectionRef} className="bg-zinc-950">
-              <PianoKeyboard
-                isMidiLearnActive={isMidiLearnActive}
-                selectedLearnAction={selectedLearnAction}
-                mappedCCPitch={getMappedActionCC('pitchWheel')}
-                mappedCCMod={getMappedActionCC('modWheel')}
-                channelLabelPitch={getChannelLabelForAction('pitchWheel')}
-                channelLabelMod={getChannelLabelForAction('modWheel')}
-                onSelectActionForLearn={handleSelectActionForLearn}
-                onUnmapAction={handleUnmapAction}
-                onRegisterWheelUpdater={(updater) => {
-                  wheelUpdaterRef.current = updater;
-                }}
-              />
+          {/* Area of Interest 2 Collapsible Modules: Arpeggiator + Virtual Piano Keyboard */}
+          {(isArpSectionOpen || isKeyboardOpen) && (
+            <div ref={lowerDrawerRef} className="bg-zinc-950 flex flex-col rounded-b-md">
+              {isArpSectionOpen && (
+                <div className={`p-1.5 sm:p-2 bg-zinc-950 ${isKeyboardOpen ? 'border-b border-zinc-800' : ''}`}>
+                  <Arpeggiator
+                    isOpen={isArpSectionOpen}
+                    onArpEnabledChange={setIsArpEnabled}
+                    isMidiLearnActive={isMidiLearnActive}
+                    selectedLearnAction={selectedLearnAction}
+                    mappedCCArpToggle={getMappedActionCC('arpToggle')}
+                    mappedCCArpHold={getMappedActionCC('arpHold')}
+                    channelLabel={getChannelLabelForAction('arpToggle')}
+                    onSelectActionForLearn={handleSelectActionForLearn}
+                    onUnmapAction={handleUnmapAction}
+                    onRegisterArpActions={(handlers) => {
+                      arpActionsRef.current = handlers;
+                    }}
+                  />
+                </div>
+              )}
+
+              {isKeyboardOpen && (
+                <div ref={keyboardSectionRef} className="bg-zinc-950">
+                  <PianoKeyboard
+                    isMidiLearnActive={isMidiLearnActive}
+                    selectedLearnAction={selectedLearnAction}
+                    mappedCCPitch={getMappedActionCC('pitchWheel')}
+                    mappedCCMod={getMappedActionCC('modWheel')}
+                    channelLabelPitch={getChannelLabelForAction('pitchWheel')}
+                    channelLabelMod={getChannelLabelForAction('modWheel')}
+                    onSelectActionForLearn={handleSelectActionForLearn}
+                    onUnmapAction={handleUnmapAction}
+                    onRegisterWheelUpdater={(updater) => {
+                      wheelUpdaterRef.current = updater;
+                    }}
+                  />
+                </div>
+              )}
             </div>
           )}
         </div>

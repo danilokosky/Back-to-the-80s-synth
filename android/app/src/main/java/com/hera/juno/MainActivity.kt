@@ -46,6 +46,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.PlatformTextStyle
@@ -436,14 +437,20 @@ fun HeraJunoNativeScreen(
         val rawHeightDp = maxHeight
         val rawAspectRatio = rawWidthDp.value / rawHeightDp.value.coerceAtLeast(1f)
 
-        // Across ALL viewports (Smartphone landscape, Tablet, Samsung DeX, Large Monitors, and TVs):
-        // Prioritize fitting the 3 primary sections in the initial viewport frame:
-        //   1. Top Header Bar
-        //   2. Full Faders, Filters & Effects Synth Rack (flexible elongation strictly capped at +20% = 1.20f)
-        //   3. Voicing/Presets Bar + Complete Arpeggiator Section
-        // Avoid showing the Piano Keyboard in the initial frame (keeping it accessible via vertical scroll),
-        // unless a very tall screen aspect ratio naturally reveals it after the faders reach their +20% cap.
-        val referenceCanvasHeightDp = 436.dp
+        // Strategy for Modular Areas of Interest:
+        // - In Widescreen (rawAspectRatio >= 1.70f, e.g. Smartphone landscape, 16:9 / 20:9 displays):
+        //   Area of Interest 1 (TopHeaderBar + TopRainbow + SynthRack + Scrollbar + BottomRainbow + VoicingPresetBar)
+        //   must fit 100.0% of the screen height (maxHeight) using ONLY Faders elongation (1.00f .. 1.20f, max +20%),
+        //   with zero cut-off on VoicingPresetBar and zero leftover peeking of the lower section.
+        // - In Taller Screens (rawAspectRatio < 1.70f, e.g. Tablets 4:3 / 16:10 or tall DeX windows):
+        //   Faders elongation caps strictly at +20% (1.20f), keeping static proportions intact, and the remaining
+        //   vertical space naturally reveals the Arpeggiator / Keyboard below.
+        val isWidescreenViewport = rawAspectRatio >= 1.70f
+        val referenceCanvasHeightDp = if (isWidescreenViewport) {
+            352.dp
+        } else {
+            (600f / rawAspectRatio.coerceAtLeast(1.0f)).coerceIn(368f, 560f).dp
+        }
         val dpiScale = (rawHeightDp / referenceCanvasHeightDp).coerceIn(0.75f, 2.6f)
         val previewMatchedDensity = remember(baseDensity, dpiScale) {
             Density(
@@ -471,40 +478,76 @@ fun HeraJunoNativeScreen(
                         .weight(1f)
                         .fillMaxHeight()
                 ) {
-                    val isCompactViewport = maxHeight <= 560.dp
-                    val keyboardSectionHeight = 190.dp
                     val responsiveSemitones = if (maxWidth >= 1200.dp) 48 else 36
+                    val currentDensity = LocalDensity.current
 
-                    // Height of non-rack elements in the 3 primary highlighted sections:
-                    // TopHeaderBar (44dp) + Top Rainbow (3dp) + Scrollbar (8dp) + Bottom Rainbow (3dp) + VoicingPresetBar (42dp) + Paddings (8dp) = 108dp
-                    // Plus ArpeggiatorKeyboardBar (40dp when arpExpanded) so the complete Arpeggiator fits inside the first screen!
-                    val nonRackBaseDp = 108f
-                    val arpBarDp = if (arpExpanded) 40f else 0f
-                    val nonRackPrimaryFrameDp = nonRackBaseDp + arpBarDp
-                    val baseRackHeightDp = 232f
+                    // Sub-pixel accurate measured heights of TopHeaderBar and VoicingPresetBar
+                    // so Area of Interest 1 (Header + Faders + Voicing) equals 100.0% of maxHeight in widescreen:
+                    var measuredHeaderPx by remember { mutableIntStateOf(0) }
+                    var measuredVoicingPx by remember { mutableIntStateOf(0) }
+                    var measuredArpPx by remember { mutableIntStateOf(0) }
 
-                    // Calculate Faders Section proportional elongation (strictly capped at +20% = 1.20f) and section-only zoom
-                    // so that Header + Faders Rack + Presets + Arpeggiator fill the primary viewport frame without showing the keyboard:
-                    val (faderElongation, rackZoomFactor) = remember(
-                        maxHeight,
-                        showKeyboard,
-                        arpExpanded,
-                        showPresetsDialog
-                    ) {
-                        val targetRackDp = (maxHeight.value - nonRackPrimaryFrameDp).coerceAtLeast(baseRackHeightDp)
-                        val totalScale = (targetRackDp / baseRackHeightDp).coerceAtLeast(1.0f)
-                        // Strict +20% maximum fader elongation (1.0f .. 1.20f) to preserve authentic hardware proportions,
-                        // while flexing down toward 1.0f whenever needed so the Arpeggiator section fits completely on screen:
-                        val elongation = totalScale.coerceIn(1.0f, 1.20f)
-                        val zoom = (totalScale / elongation).coerceIn(1.0f, 1.35f)
-                        elongation to zoom
+                    val headerHeightDp = if (measuredHeaderPx > 0) {
+                        with(currentDensity) { measuredHeaderPx.toDp().value }
+                    } else {
+                        38f
+                    }
+                    val voicingHeightDp = if (measuredVoicingPx > 0) {
+                        with(currentDensity) { measuredVoicingPx.toDp().value }
+                    } else {
+                        36f
+                    }
+                    val arpHeightDp = if (arpExpanded) {
+                        if (measuredArpPx > 0) with(currentDensity) { measuredArpPx.toDp().value } else 36f
+                    } else {
+                        0f
                     }
 
-                    val rackZoomedDensity = remember(previewMatchedDensity, rackZoomFactor) {
-                        Density(
-                            density = previewMatchedDensity.density * rackZoomFactor,
-                            fontScale = 1.0f
-                        )
+                    // Fixed static heights inside Area of Interest 1:
+                    // Header + TopRainbow (3dp) + Horizontal Scrollbar (8dp) + BottomRainbow (3dp) + VoicingBar
+                    val staticNonRackArea1Dp = headerHeightDp + 3f + 8f + 3f + voicingHeightDp
+                    val baseRackHeightDp = 232f
+
+                    // Faders Section elongation (strictly capped at 1.00f .. 1.20f = max +20% of real proportion).
+                    // Completely independent of whether ARP, PRESETS, or TECLADO are expanded or collapsed!
+                    // All other elements remain at 1.0f static proportion (no rackZoomFactor distortion).
+                    val faderElongation = remember(maxHeight.value, staticNonRackArea1Dp) {
+                        val idealRackDp = (maxHeight.value - staticNonRackArea1Dp).coerceAtLeast(baseRackHeightDp)
+                        (idealRackDp / baseRackHeightDp).coerceIn(1.00f, 1.20f)
+                    }
+                    val rackZoomedDensity = previewMatchedDensity
+
+                    // Size the Keyboard in Area of Interest 2 so that when scrolled to the bottom (maxScroll),
+                    // VoicingPresetBar sits right at the top of the screen, followed by Arpeggiator and Keyboard to the bottom!
+                    val keyboardSectionHeight = remember(maxHeight.value, voicingHeightDp, arpHeightDp) {
+                        val availableBelowVoicingDp = maxHeight.value - voicingHeightDp - arpHeightDp - (if (arpExpanded) 12f else 8f)
+                        availableBelowVoicingDp.coerceIn(182f, 276f).dp
+                    }
+
+                    // Soft Magnetic Edge Snap:
+                    // User has full manual control while dragging/scrolling, and when releasing near the top edge (Area 1)
+                    // or near the bottom edge (Area 2), the view gently magnetizes into place.
+                    val isScrollInProgress = mainVerticalScroll.isScrollInProgress
+                    LaunchedEffect(isScrollInProgress, mainVerticalScroll.maxValue) {
+                        val maxScroll = mainVerticalScroll.maxValue
+                        if (!isScrollInProgress && maxScroll > 0) {
+                            delay(75L)
+                            if (!mainVerticalScroll.isScrollInProgress) {
+                                val current = mainVerticalScroll.value
+                                val snapThresholdPx = (maxScroll * 0.30f).roundToInt().coerceIn(20, 175)
+                                if (current in 1..snapThresholdPx) {
+                                    mainVerticalScroll.animateScrollTo(
+                                        value = 0,
+                                        animationSpec = tween(durationMillis = 220)
+                                    )
+                                } else if (current in (maxScroll - snapThresholdPx) until maxScroll) {
+                                    mainVerticalScroll.animateScrollTo(
+                                        value = maxScroll,
+                                        animationSpec = tween(durationMillis = 220)
+                                    )
+                                }
+                            }
+                        }
                     }
 
                     Column(
@@ -512,8 +555,13 @@ fun HeraJunoNativeScreen(
                             .fillMaxSize()
                             .verticalScroll(mainVerticalScroll)
                     ) {
-                    // 1. TOP ROLAND HEADER BAR (Branding with JUNO-60 / JUPITER-8 Dual-Synth switch + VOICES + Scope + MIDI & Master Controls)
-                    TopHeaderBar(
+                    // 1. TOP ROLAND HEADER BAR (Measured so Area of Interest 1 is sub-pixel exact)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onSizeChanged { measuredHeaderPx = it.height }
+                    ) {
+                        TopHeaderBar(
                         isJupiter8 = isJupiter8,
                         onSelectSynthModel = { selectJp8 ->
                             val targetModel = if (selectJp8) 1f else 0f
@@ -579,20 +627,21 @@ fun HeraJunoNativeScreen(
                         }
                     )
 
-                    // 1A. INLINE EXPANDABLE MIDI PROFILE DRAWER (Expands downwards instead of opening a pop-up!)
-                    if (showProfileDialog) {
-                        MidiProfileInlineDrawer(
-                            midiManager = midiManager,
-                            uiRevision = rev,
-                            onNotifyUiChanged = onNotifyUiChanged,
-                            onCollapse = { showProfileDialog = false }
-                        )
+                        // 1A. INLINE EXPANDABLE MIDI PROFILE DRAWER (Expands downwards instead of opening a pop-up!)
+                        if (showProfileDialog) {
+                            MidiProfileInlineDrawer(
+                                midiManager = midiManager,
+                                uiRevision = rev,
+                                onNotifyUiChanged = onNotifyUiChanged,
+                                onCollapse = { showProfileDialog = false }
+                            )
+                        }
                     }
 
                     // 1B. Signature Roland Juno-60 5-Color Metallic Accent Stripe (Top Separator)
                     JunoRainbowSeparator()
 
-                    // 2. MAIN HORIZONTAL SCROLLABLE SYNTHESIZER RACK (Section-only zoom + up to 20% proportional fader elongation)
+                    // 2. MAIN HORIZONTAL SCROLLABLE SYNTHESIZER RACK (Up to +20% proportional fader elongation)
                     val rackScrollState = rememberScrollState()
                     val rackSections = remember {
                         listOf(
@@ -633,14 +682,14 @@ fun HeraJunoNativeScreen(
                         }
                     }
 
-                    // 2A. Visible Horizontal Scrollbar Indicator under the Synth Rack (matching AI Studio Preview)
-                    if (rackScrollState.maxValue > 0) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(8.dp)
-                                .background(Color(0xFF0D0F15))
-                                .pointerInput(rackScrollState.maxValue) {
+                    // 2A. Fixed 8dp Horizontal Scrollbar Indicator under the Synth Rack (Always 8dp so Area 1 height never jumps)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(8.dp)
+                            .background(Color(0xFF0D0F15))
+                            .pointerInput(rackScrollState.maxValue) {
+                                if (rackScrollState.maxValue > 0) {
                                     detectTapGestures { offset ->
                                         val w = size.width.toFloat().coerceAtLeast(1f)
                                         val target = ((offset.x / w) * rackScrollState.maxValue).roundToInt()
@@ -649,7 +698,9 @@ fun HeraJunoNativeScreen(
                                         }
                                     }
                                 }
-                                .pointerInput(rackScrollState.maxValue) {
+                            }
+                            .pointerInput(rackScrollState.maxValue) {
+                                if (rackScrollState.maxValue > 0) {
                                     detectDragGestures { change, _ ->
                                         change.consume()
                                         val w = size.width.toFloat().coerceAtLeast(1f)
@@ -659,38 +710,48 @@ fun HeraJunoNativeScreen(
                                         }
                                     }
                                 }
-                                .padding(horizontal = 8.dp, vertical = 2.dp)
-                        ) {
-                            Canvas(modifier = Modifier.fillMaxSize()) {
-                                val trackW = size.width
-                                val trackH = size.height
-                                drawRoundRect(
-                                    color = Color(0xFF1A1E29),
-                                    size = Size(trackW, trackH),
-                                    cornerRadius = CornerRadius(trackH * 0.5f, trackH * 0.5f)
-                                )
-                                val thumbFraction = (trackW / (trackW + rackScrollState.maxValue.toFloat())).coerceIn(0.18f, 0.85f)
-                                val thumbW = trackW * thumbFraction
-                                val maxThumbOffset = (trackW - thumbW).coerceAtLeast(0f)
-                                val scrollNorm = (rackScrollState.value.toFloat() / rackScrollState.maxValue.toFloat().coerceAtLeast(1f)).coerceIn(0f, 1f)
-                                drawRoundRect(
-                                    color = Color(0xFF4B5563),
-                                    topLeft = Offset(maxThumbOffset * scrollNorm, 0f),
-                                    size = Size(thumbW, trackH),
-                                    cornerRadius = CornerRadius(trackH * 0.5f, trackH * 0.5f)
-                                )
                             }
+                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            val trackW = size.width
+                            val trackH = size.height
+                            drawRoundRect(
+                                color = Color(0xFF1A1E29),
+                                size = Size(trackW, trackH),
+                                cornerRadius = CornerRadius(trackH * 0.5f, trackH * 0.5f)
+                            )
+                            val maxScrollVal = rackScrollState.maxValue.toFloat()
+                            val thumbFraction = if (maxScrollVal > 0f) {
+                                (trackW / (trackW + maxScrollVal)).coerceIn(0.18f, 0.85f)
+                            } else {
+                                1f
+                            }
+                            val thumbW = trackW * thumbFraction
+                            val maxThumbOffset = (trackW - thumbW).coerceAtLeast(0f)
+                            val scrollNorm = if (maxScrollVal > 0f) {
+                                (rackScrollState.value.toFloat() / maxScrollVal).coerceIn(0f, 1f)
+                            } else {
+                                0f
+                            }
+                            drawRoundRect(
+                                color = Color(0xFF4B5563),
+                                topLeft = Offset(maxThumbOffset * scrollNorm, 0f),
+                                size = Size(thumbW, trackH),
+                                cornerRadius = CornerRadius(trackH * 0.5f, trackH * 0.5f)
+                            )
                         }
                     }
 
                     // 2B. Signature Roland Juno-60 5-Color Metallic Accent Stripe
                     JunoRainbowSeparator()
 
-                    // 2C. FIRST PART OF PRESETS SECTION INCLUDED ON FIRST SCREEN
+                    // 2C. FOOTER OF AREA OF INTEREST 1 (Voicing / Presets Bar — fits 100% at the bottom of the first screen)
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(Color(0xFF090B10))
+                            .onSizeChanged { measuredVoicingPx = it.height }
                             .padding(horizontal = 6.dp, vertical = 4.dp)
                     ) {
                         VoicingPresetBar(
@@ -708,31 +769,13 @@ fun HeraJunoNativeScreen(
                             onPrevPreset = { applyPreset(currentPresetIndex - 1) },
                             onNextPreset = { applyPreset(currentPresetIndex + 1) },
                             onToggleTimbresExpanded = {
-                                val next = !showPresetsDialog
-                                showPresetsDialog = next
-                                if (next && isCompactViewport && mainVerticalScroll.value < 80) {
-                                    coroutineScope.launch {
-                                        mainVerticalScroll.animateScrollTo(140)
-                                    }
-                                }
+                                showPresetsDialog = !showPresetsDialog
                             },
                             onToggleArpExpanded = {
-                                val next = !arpExpanded
-                                arpExpanded = next
-                                if (next && isCompactViewport && mainVerticalScroll.value < 60) {
-                                    coroutineScope.launch {
-                                        mainVerticalScroll.animateScrollTo(95)
-                                    }
-                                }
+                                arpExpanded = !arpExpanded
                             },
                             onToggleKeyboard = {
-                                val next = !showKeyboard
-                                showKeyboard = next
-                                if (next && isCompactViewport && mainVerticalScroll.value < 80) {
-                                    coroutineScope.launch {
-                                        mainVerticalScroll.animateScrollTo(180)
-                                    }
-                                }
+                                showKeyboard = !showKeyboard
                             },
                             onSaveUserPreset = { showSavePresetDialog = true },
                             onExportPreset = {
@@ -745,59 +788,66 @@ fun HeraJunoNativeScreen(
                         )
                     }
 
-                    // 3. BELOW SECTION (Expanded Timbres Browser + Full Expandable Arpeggiator + Piano Keyboard)
-                    Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Color(0xFF090B10))
-                        .border(1.dp, Color(0xFF1A202E))
-                        .padding(horizontal = 6.dp, vertical = 4.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    if (showPresetsDialog) {
-                        VoicingTimbresInlineBrowser(
-                            presetIndex = currentPresetIndex,
-                            allPresets = allPresets,
-                            userPresetCount = userPresets.size,
-                            onSelectPreset = { idx -> applyPreset(idx) },
-                            onDeleteUserPreset = { presetToDelete ->
-                                userPresets = PresetRepository.deleteUserPreset(context, presetToDelete.name)
-                                val newAll = PresetRepository.FACTORY_PRESETS + userPresets
-                                if (currentPresetIndex >= newAll.size) {
-                                    currentPresetIndex = 0
+                    // 3. AREA OF INTEREST 2 (Rendered ONLY when at least one drawer is active; zero leftover border when collapsed!)
+                    if (showPresetsDialog || arpExpanded || showKeyboard) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFF090B10))
+                                .border(1.dp, Color(0xFF1A202E))
+                                .padding(horizontal = 6.dp, vertical = 4.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            if (showPresetsDialog) {
+                                VoicingTimbresInlineBrowser(
+                                    presetIndex = currentPresetIndex,
+                                    allPresets = allPresets,
+                                    userPresetCount = userPresets.size,
+                                    onSelectPreset = { idx -> applyPreset(idx) },
+                                    onDeleteUserPreset = { presetToDelete ->
+                                        userPresets = PresetRepository.deleteUserPreset(context, presetToDelete.name)
+                                        val newAll = activeFactoryPresets + userPresets
+                                        if (currentPresetIndex >= newAll.size) {
+                                            currentPresetIndex = 0
+                                        }
+                                        Toast.makeText(context, "Timbre removido: ${presetToDelete.name}", Toast.LENGTH_SHORT).show()
+                                    }
+                                )
+                            }
+
+                            // 3B. FULL ARPEGGIATOR SECTION
+                            if (arpExpanded) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .onSizeChanged { measuredArpPx = it.height }
+                                ) {
+                                    ArpeggiatorKeyboardBar(
+                                        arpEnabled = arpEnabled,
+                                        onToggleArp = {
+                                            arpEnabled = !arpEnabled
+                                            if (!arpEnabled && !holdSustain) onPanicAllNotesOff()
+                                        },
+                                        arpMode = arpMode,
+                                        onSelectArpMode = { arpMode = it },
+                                        arpRange = arpRange,
+                                        onSelectArpRange = { arpRange = it },
+                                        arpRateDiv = arpRateDiv,
+                                        onSelectArpRateDiv = { arpRateDiv = it },
+                                        arpBpm = arpBpm,
+                                        onArpBpmChange = { arpBpm = it },
+                                        holdSustain = holdSustain,
+                                        onToggleHold = {
+                                            val next = !holdSustain
+                                            holdSustain = next
+                                            if (!next) onPanicAllNotesOff()
+                                        }
+                                    )
                                 }
-                                Toast.makeText(context, "Timbre removido: ${presetToDelete.name}", Toast.LENGTH_SHORT).show()
                             }
-                        )
-                    }
 
-                    // 3B. FULL ARPEGGIATOR SECTION (Encompassed entirely by the ARP button next to Presets)
-                    if (arpExpanded) {
-                        ArpeggiatorKeyboardBar(
-                            arpEnabled = arpEnabled,
-                            onToggleArp = {
-                                arpEnabled = !arpEnabled
-                                if (!arpEnabled && !holdSustain) onPanicAllNotesOff()
-                            },
-                            arpMode = arpMode,
-                            onSelectArpMode = { arpMode = it },
-                            arpRange = arpRange,
-                            onSelectArpRange = { arpRange = it },
-                            arpRateDiv = arpRateDiv,
-                            onSelectArpRateDiv = { arpRateDiv = it },
-                            arpBpm = arpBpm,
-                            onArpBpmChange = { arpBpm = it },
-                            holdSustain = holdSustain,
-                            onToggleHold = {
-                                val next = !holdSustain
-                                holdSustain = next
-                                if (!next) onPanicAllNotesOff()
-                            }
-                        )
-                    }
-
-                // 3C. KEYBOARD CONTROLS + BENDER/MOD WHEELS + MULTI-TOUCH POLYPHONIC KEYBOARD (Matching Reference UI)
-                if (showKeyboard) {
+                            // 3C. KEYBOARD CONTROLS + BENDER/MOD WHEELS + MULTI-TOUCH POLYPHONIC KEYBOARD
+                            if (showKeyboard) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1021,7 +1071,8 @@ fun HeraJunoNativeScreen(
                         }
                     }
                 }
-            }
+                        }
+                    }
                     }
 
                     // Centered Live Rack Section Projection Pop-up (Immediate on MIDI controller change, waits 1.5s before smooth fade-out, inhibited during MIDI Learn)
