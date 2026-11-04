@@ -31,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -453,21 +454,23 @@ fun HeraJunoNativeScreen(
         val rawHeightDp = maxHeight
         val rawAspectRatio = rawWidthDp.value / rawHeightDp.value.coerceAtLeast(1f)
 
-        // Strategy for Modular Areas of Interest:
-        // - In Widescreen (rawAspectRatio >= 1.70f, e.g. Smartphone landscape, 16:9 / 20:9 displays):
-        //   Area of Interest 1 (TopHeaderBar + TopRainbow + SynthRack + Scrollbar + BottomRainbow + VoicingPresetBar)
-        //   must fit 100.0% of the screen height (maxHeight) using ONLY Faders elongation (1.00f .. 1.20f, max +20%),
-        //   with zero cut-off on VoicingPresetBar and zero leftover peeking of the lower section.
-        // - In Taller Screens (rawAspectRatio < 1.70f, e.g. Tablets 4:3 / 16:10 or tall DeX windows):
-        //   Faders elongation caps strictly at +20% (1.20f), keeping static proportions intact, and the remaining
-        //   vertical space naturally reveals the Arpeggiator / Keyboard below.
-        val isWidescreenViewport = rawAspectRatio >= 1.70f
-        val referenceCanvasHeightDp = if (isWidescreenViewport) {
-            352.dp
+        // Strategy for Modular Areas of Interest & Large-Screen Studio Refinement:
+        // - Smartphones in landscape keep their crisp 352dp base height (and at least 742dp virtual width).
+        // - Tablets, Samsung DeX windows, and large monitors (rawWidthDp >= 860.dp or rawHeightDp >= 460.dp)
+        //   receive a refined studio workstation canvas (820dp..980dp wide, 420dp..540dp tall) so controls,
+        //   headers, and cards look crisp and proportional rather than blown-up phone widgets.
+        // - Across ALL proportions (Phone 20:9, DeX 16:9, Tablet 16:10 / 4:3), Area of Interest 1
+        //   (TopHeaderBar + TopRainbow + SynthRack + Scrollbar + BottomRainbow + VoicingPresetBar)
+        //   fits 100.0% of the viewport height via the smooth Fader Accordion ("efeito de sanfona", 0.82f..2.15f),
+        //   with zero cut-off on VoicingPresetBar and zero peeking of the Arpeggiator/Keyboard at the bottom.
+        val isLargeScreenOrDex = rawWidthDp >= 860.dp || rawHeightDp >= 460.dp
+        val referenceCanvasHeightDp = if (isLargeScreenOrDex) {
+            val targetVirtualWidthDp = (rawWidthDp.value * 0.78f).coerceIn(820f, 980f)
+            (targetVirtualWidthDp / rawAspectRatio.coerceAtLeast(1.18f)).coerceIn(420f, 540f).dp
         } else {
-            (600f / rawAspectRatio.coerceAtLeast(1.0f)).coerceIn(368f, 560f).dp
+            maxOf(352f, 742f / rawAspectRatio.coerceAtLeast(1.25f)).coerceIn(352f, 440f).dp
         }
-        val dpiScale = (rawHeightDp / referenceCanvasHeightDp).coerceIn(0.75f, 2.6f)
+        val dpiScale = (rawHeightDp / referenceCanvasHeightDp).coerceIn(0.75f, 2.4f)
         val previewMatchedDensity = remember(baseDensity, dpiScale) {
             Density(
                 density = baseDensity.density * dpiScale,
@@ -494,14 +497,16 @@ fun HeraJunoNativeScreen(
                         .weight(1f)
                         .fillMaxHeight()
                 ) {
-                    val responsiveSemitones = if (maxWidth >= 1200.dp) 48 else 36
+                    val responsiveSemitones = if (maxWidth >= 820.dp) 48 else 36
                     val currentDensity = LocalDensity.current
 
-                    // Sub-pixel accurate measured heights of TopHeaderBar and VoicingPresetBar
-                    // so Area of Interest 1 (Header + Faders + Voicing) equals 100.0% of maxHeight in widescreen:
+                    // Sub-pixel accurate measured heights of TopHeaderBar (+ Profile Drawer), VoicingPresetBar,
+                    // PresetBrowser Drawer, and Arpeggiator Drawer so Area of Interest 1 and Area of Interest 2
+                    // both fit 100.0% of the screen across all proportions:
                     var measuredHeaderPx by remember { mutableIntStateOf(0) }
                     var measuredVoicingPx by remember { mutableIntStateOf(0) }
                     var measuredArpPx by remember { mutableIntStateOf(0) }
+                    var measuredPresetsPx by remember { mutableIntStateOf(0) }
 
                     val headerHeightDp = if (measuredHeaderPx > 0) {
                         with(currentDensity) { measuredHeaderPx.toDp().value }
@@ -514,7 +519,12 @@ fun HeraJunoNativeScreen(
                         36f
                     }
                     val arpHeightDp = if (arpExpanded) {
-                        if (measuredArpPx > 0) with(currentDensity) { measuredArpPx.toDp().value } else 36f
+                        if (measuredArpPx > 0) with(currentDensity) { measuredArpPx.toDp().value } else 40f
+                    } else {
+                        0f
+                    }
+                    val presetsHeightDp = if (showPresetsDialog) {
+                        if (measuredPresetsPx > 0) with(currentDensity) { measuredPresetsPx.toDp().value } else 54f
                     } else {
                         0f
                     }
@@ -529,48 +539,76 @@ fun HeraJunoNativeScreen(
                     val staticNonRackArea1Dp = headerHeightDp + 3f + 8f + 3f + voicingHeightDp
                     val baseRackHeightDp = 232f
 
-                    // Dynamic target Faders Section adaptation (0.88f .. 1.20f: allows up to ~12% retraction — typically ~5%
-                    // on widescreen phones — and up to +20% elongation on taller screens).
-                    // Computed from exact pixel measurements so Area of Interest 1 (Header + Faders + Voicing)
-                    // equals 100.0% of viewportHeightPx with ZERO "sobra"!
+                    // Dynamic Fader Accordion ("Efeito de Sanfona dos Faders", 0.82f .. 2.15f):
+                    // Works across ALL screen proportions (Smartphones, Tablets, Samsung DeX full/windowed, Monitors).
+                    // - When Keyboard is open (Area 2 active below), Area 1 frames Header + Faders + Voicing at 100.0% of viewportHeightPx.
+                    // - When Keyboard is closed and ARP is open, the faders smoothly compress by 100% of measuredArpPx so
+                    //   Header + Faders + Voicing + ARP fits 100.0% of viewportHeightPx with zero vertical scroll leftover ("zero sobra").
+                    // - When PRESETS or PERFIL opens, the faders smoothly compress so the drawer fits cleanly inside Area 1.
                     val baseRackHeightPx = with(currentDensity) { baseRackHeightDp.dp.toPx() }.coerceAtLeast(1f)
-                    val inlineDrawerAllowancePx = with(currentDensity) {
-                        (
-                            (if (arpExpanded && !showKeyboard) (arpHeightDp + 6f) * 0.65f else 0f) +
-                            (if (showPresetsDialog && !showKeyboard) 52f else 0f) +
-                            (if (showProfileDialog) 26f else 0f)
-                        ).dp.toPx()
+                    val inlineDrawerAllowancePx = remember(
+                        arpExpanded,
+                        showKeyboard,
+                        showPresetsDialog,
+                        measuredArpPx,
+                        measuredPresetsPx,
+                        currentDensity
+                    ) {
+                        val arpPx = if (arpExpanded && !showKeyboard) {
+                            if (measuredArpPx > 0) measuredArpPx.toFloat() else with(currentDensity) { 40.dp.toPx() }
+                        } else {
+                            0f
+                        }
+                        val presetsPx = if (showPresetsDialog) {
+                            if (measuredPresetsPx > 0) measuredPresetsPx.toFloat() else with(currentDensity) { 54.dp.toPx() }
+                        } else {
+                            0f
+                        }
+                        arpPx + presetsPx
                     }
                     val targetFaderElongation = remember(
                         viewportHeightPx,
                         measuredHeaderPx,
                         measuredVoicingPx,
                         separatorsTotalPx,
-                        inlineDrawerAllowancePx,
-                        maxHeight.value,
-                        staticNonRackArea1Dp
+                        inlineDrawerAllowancePx
                     ) {
-                        val idealRackPx = if (measuredHeaderPx > 0 && measuredVoicingPx > 0) {
-                            (viewportHeightPx - measuredHeaderPx - measuredVoicingPx - separatorsTotalPx).toFloat() - inlineDrawerAllowancePx
+                        if (measuredHeaderPx > 0 && measuredVoicingPx > 0) {
+                            val idealRackPx = (viewportHeightPx - measuredHeaderPx - measuredVoicingPx - separatorsTotalPx).toFloat() - inlineDrawerAllowancePx
+                            (idealRackPx / baseRackHeightPx).coerceIn(0.82f, 2.15f)
                         } else {
-                            with(currentDensity) { (maxHeight.value - staticNonRackArea1Dp).dp.toPx() } - inlineDrawerAllowancePx
+                            // Start at 1.0f on frame 0 so when measurements arrive on frame 1, the faders smoothly
+                            // glide ("efeito de sanfona") into the exact 100% viewport fit!
+                            1.00f
                         }
-                        (idealRackPx / baseRackHeightPx).coerceIn(0.88f, 1.20f)
                     }
                     // Smoothly animated fader elongation state — read only in Modifier.layout for 0-recomposition 120fps performance
                     val faderElongationState = animateFloatAsState(
                         targetValue = targetFaderElongation,
-                        animationSpec = tween(durationMillis = 320, easing = SilkySmoothEasing),
+                        animationSpec = tween(durationMillis = 360, easing = SilkySmoothEasing),
                         label = "faderElongation"
                     )
                     val rackZoomedDensity = previewMatchedDensity
 
                     // Size the Keyboard in Area of Interest 2 so that when scrolled to the bottom (maxScroll),
-                    // VoicingPresetBar sits right at the top of the screen, followed by Arpeggiator and Keyboard to the bottom!
-                    val keyboardSectionHeight = remember(maxHeight.value, voicingHeightDp, arpHeightDp, arpExpanded) {
-                        val availableBelowVoicingDp = maxHeight.value - voicingHeightDp - arpHeightDp - 6f
-                        availableBelowVoicingDp.coerceIn(182f, 276f).dp
+                    // VoicingPresetBar sits right at the top of the screen, followed by Arpeggiator and Keyboard to the bottom
+                    // on BOTH Smartphones and large Tablet / Samsung DeX viewports!
+                    val targetKeyboardSectionHeight = remember(
+                        maxHeight.value,
+                        voicingHeightDp,
+                        arpHeightDp,
+                        presetsHeightDp,
+                        arpExpanded,
+                        showPresetsDialog
+                    ) {
+                        val availableBelowVoicingDp = maxHeight.value - voicingHeightDp - arpHeightDp - presetsHeightDp - 6f
+                        availableBelowVoicingDp.coerceIn(165f, 460f).dp
                     }
+                    val keyboardSectionHeight by animateDpAsState(
+                        targetValue = targetKeyboardSectionHeight,
+                        animationSpec = tween(durationMillis = 300, easing = SilkySmoothEasing),
+                        label = "keyboardSectionHeight"
+                    )
 
                     // Track when any drawer is actively unfolding/folding so magnetic scroll doesn't fight drawer animations
                     var isDrawerTransitioning by remember { mutableStateOf(false) }
@@ -743,29 +781,24 @@ fun HeraJunoNativeScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .layout { measurable, constraints ->
-                                    val elong = faderElongationState.value.coerceIn(0.88f, 1.20f)
+                                    val elong = faderElongationState.value.coerceIn(0.82f, 2.15f)
                                     val animatedH = (232f * elong).dp.roundToPx()
-                                    val minRackPx = (232f * 0.88f).dp.roundToPx()
-                                    val maxRackPx = (232f * 1.20f).dp.roundToPx()
-                                    // When in standard Area 1 view (no inline top/mid drawer open) and measurements are ready,
-                                    // clamp to exact integer pixel remainder so Header + Separators + Rack + Voicing == viewportHeightPx (0px sobra!)
+                                    val minRackPx = (232f * 0.82f).dp.roundToPx()
+                                    val maxRackPx = (232f * 2.15f).dp.roundToPx()
+                                    // Lock to exact integer pixel remainder when animation settles (within 6px) so
+                                    // Header + Separators + Rack + Voicing (+ inline drawers) == viewportHeightPx (0px sobra!)
                                     val exactArea1RackPx = if (measuredHeaderPx > 0 && measuredVoicingPx > 0) {
-                                        (viewportHeightPx - measuredHeaderPx - measuredVoicingPx - separatorsTotalPx)
+                                        (viewportHeightPx - measuredHeaderPx - measuredVoicingPx - separatorsTotalPx - inlineDrawerAllowancePx.roundToInt())
                                             .coerceIn(minRackPx, maxRackPx)
                                     } else {
                                         animatedH
                                     }
-                                    val targetH = if (
-                                        !arpExpanded &&
-                                        !showPresetsDialog &&
-                                        !showProfileDialog &&
-                                        kotlin.math.abs(animatedH - exactArea1RackPx) <= 6
-                                    ) {
+                                    val targetH = if (kotlin.math.abs(animatedH - exactArea1RackPx) <= 6) {
                                         exactArea1RackPx
                                     } else {
                                         animatedH
                                     }
-                                    val padV = (3.5f * elong).dp.roundToPx()
+                                    val padV = (3.5f * elong.coerceAtMost(1.35f)).dp.roundToPx()
                                     val innerH = (targetH - padV * 2).coerceAtLeast(0)
                                     val placeable = measurable.measure(
                                         constraints.copy(minHeight = innerH, maxHeight = innerH)
@@ -925,6 +958,7 @@ fun HeraJunoNativeScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .graphicsLayer { clip = true }
+                                    .onSizeChanged { measuredPresetsPx = it.height }
                                     .padding(horizontal = 6.dp, vertical = 3.dp)
                             ) {
                                 VoicingTimbresInlineBrowser(
@@ -1527,7 +1561,7 @@ private fun LiveOscilloscopeBox() {
     }
     Box(
         modifier = Modifier
-            .width(86.dp)
+            .width(76.dp)
             .height(26.dp)
             .background(Color(0xFF05100C), RoundedCornerShape(4.dp))
             .border(1.dp, Color(0xFF1B4332), RoundedCornerShape(4.dp))
@@ -1684,16 +1718,16 @@ private fun TopHeaderBar(
             LiveOscilloscopeBox()
         }
 
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(6.dp))
 
         // RIGHT: Sleek Desktop Control Deck Container
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.5.dp),
             modifier = Modifier
                 .background(Color(0xFF07090D), RoundedCornerShape(5.dp))
                 .border(1.dp, Color(0xFF1E2432), RoundedCornerShape(5.dp))
-                .padding(horizontal = 6.dp, vertical = 2.5.dp)
+                .padding(horizontal = 5.dp, vertical = 2.5.dp)
         ) {
             // GROUP 1: MIDI Channels & Profile Selector Sub-Panel
             Row(
@@ -4313,11 +4347,11 @@ private fun SynthModuleCard(
             }
         }
     ) { measurables, _ ->
-        val elong = elongationState.value.coerceIn(0.88f, 1.20f)
+        val elong = elongationState.value.coerceIn(0.82f, 2.15f)
         val totalH = (224f * elong).dp.roundToPx()
         val headerEstH = 19.dp.roundToPx()
         val footerEstH = 15.dp.roundToPx()
-        val padV = (4f * elong).dp.roundToPx()
+        val padV = (4f * elong.coerceAtMost(1.30f)).dp.roundToPx()
         val contentMaxH = (totalH - headerEstH - footerEstH - padV * 2).coerceAtLeast(40)
 
         // 1. Measure content once with unconstrained width to get natural card width
@@ -4384,8 +4418,13 @@ private fun JunoParamFader(
         modifier = Modifier
             .width(42.dp)
             .layout { measurable, constraints ->
-                val elong = elongationState.value.coerceIn(0.88f, 1.20f)
-                val targetH = (faderHeight.value * elong).dp.roundToPx()
+                val elong = elongationState.value.coerceIn(0.82f, 2.15f)
+                val faderScale = if (elong >= 1f) {
+                    1f + (elong - 1f) * 1.22f
+                } else {
+                    elong
+                }
+                val targetH = (faderHeight.value * faderScale).dp.roundToPx()
                 val placeable = measurable.measure(
                     constraints.copy(minHeight = targetH, maxHeight = targetH)
                 )
@@ -4465,7 +4504,8 @@ private fun JunoParamFader(
                         )
                     }
             ) {
-                // Left 100 / 50 / 0 Scale Labels
+                // Left Scale Labels: Refines into a 5-point studio console scale (100/75/50/25/0) when elongated on Tablets/DeX
+                val showDetailedScale = elongationState.value >= 1.22f
                 Column(
                     modifier = Modifier
                         .align(Alignment.CenterStart)
@@ -4474,9 +4514,15 @@ private fun JunoParamFader(
                     verticalArrangement = Arrangement.SpaceBetween,
                     horizontalAlignment = Alignment.End
                 ) {
-                    Text("100", color = Color(0xFF4B5563), fontSize = 5.sp, fontFamily = FontFamily.Monospace)
-                    Text("50", color = Color(0xFF4B5563), fontSize = 5.sp, fontFamily = FontFamily.Monospace)
-                    Text("0", color = Color(0xFF4B5563), fontSize = 5.sp, fontFamily = FontFamily.Monospace)
+                    Text("100", color = Color(0xFF6B7280), fontSize = 5.sp, fontFamily = FontFamily.Monospace)
+                    if (showDetailedScale) {
+                        Text("75", color = Color(0xFF4B5563), fontSize = 4.6.sp, fontFamily = FontFamily.Monospace)
+                    }
+                    Text("50", color = Color(0xFF6B7280), fontSize = 5.sp, fontFamily = FontFamily.Monospace)
+                    if (showDetailedScale) {
+                        Text("25", color = Color(0xFF4B5563), fontSize = 4.6.sp, fontFamily = FontFamily.Monospace)
+                    }
+                    Text("0", color = Color(0xFF6B7280), fontSize = 5.sp, fontFamily = FontFamily.Monospace)
                 }
 
                 Canvas(modifier = Modifier.fillMaxSize()) {
@@ -4485,20 +4531,46 @@ private fun JunoParamFader(
                     val padY = 8.dp.toPx()
                     val usableH = (h - padY * 2f).coerceAtLeast(10f)
                     val centerX = w * 0.52f
+                    val isLongThrow = usableH >= 135.dp.toPx()
 
-                    // Right-side 3 crisp horizontal tick lines (100, 50, 0)
-                    for (idx in 0..2) {
-                        val ty = padY + usableH * (idx / 2f)
-                        val tickW = if (idx == 1) 6.dp.toPx() else 4.5.dp.toPx()
+                    // Precision Roland studio graduation ticks along the track:
+                    // 11-step calibration ladder (every 10%) on larger screens, or 5-step on compact screens
+                    val steps = if (isLongThrow) 10 else 4
+                    for (idx in 0..steps) {
+                        val frac = idx.toFloat() / steps.toFloat()
+                        val ty = padY + usableH * frac
+                        val isCenter = idx * 2 == steps
+                        val isEnds = idx == 0 || idx == steps
+                        val isQuarter = isLongThrow && (idx == 2 || idx == 3 || idx == 7 || idx == 8)
+                        val tickW = when {
+                            isCenter -> 6.5.dp.toPx()
+                            isEnds -> 5.dp.toPx()
+                            isQuarter -> 3.6.dp.toPx()
+                            else -> 2.6.dp.toPx()
+                        }
+                        val tickColor = when {
+                            isCenter -> Color(0xFF9CA3AF)
+                            isEnds -> Color(0xFF6B7280)
+                            else -> Color(0xFF374151)
+                        }
                         drawLine(
-                            color = if (idx == 1) Color(0xFF6B7280) else Color(0xFF4B5563),
-                            start = Offset(centerX + 8.dp.toPx(), ty),
-                            end = Offset(centerX + 8.dp.toPx() + tickW, ty),
-                            strokeWidth = 1.1f
+                            color = tickColor,
+                            start = Offset(centerX + 7.5.dp.toPx(), ty),
+                            end = Offset(centerX + 7.5.dp.toPx() + tickW, ty),
+                            strokeWidth = if (isCenter || isEnds) 1.15f else 0.85f
                         )
+                        if (isLongThrow && (isCenter || isEnds || idx % 2 == 0)) {
+                            val leftTickW = if (isCenter || isEnds) 3.2.dp.toPx() else 2.0.dp.toPx()
+                            drawLine(
+                                color = tickColor.copy(alpha = 0.65f),
+                                start = Offset(centerX - 7.5.dp.toPx() - leftTickW, ty),
+                                end = Offset(centerX - 7.5.dp.toPx(), ty),
+                                strokeWidth = 0.85f
+                            )
+                        }
                     }
 
-                    // Recessed Dark Track Slot
+                    // Recessed Dark Track Slot with subtle metallic bezel
                     val trackW = 5.dp.toPx()
                     drawRoundRect(
                         color = Color(0xFF040609),
@@ -4518,6 +4590,19 @@ private fun JunoParamFader(
                         topLeft = Offset(centerX - capW * 0.5f, capY - capH * 0.5f),
                         size = Size(capW, capH),
                         cornerRadius = CornerRadius(3.dp.toPx(), 3.dp.toPx())
+                    )
+                    // Subtle top/bottom tactile grip ribs on fader cap
+                    drawLine(
+                        color = Color(0x28000000),
+                        start = Offset(centerX - capW * 0.36f, capY - 2.8.dp.toPx()),
+                        end = Offset(centerX + capW * 0.36f, capY - 2.8.dp.toPx()),
+                        strokeWidth = 1f
+                    )
+                    drawLine(
+                        color = Color(0x28000000),
+                        start = Offset(centerX - capW * 0.36f, capY + 2.8.dp.toPx()),
+                        end = Offset(centerX + capW * 0.36f, capY + 2.8.dp.toPx()),
+                        strokeWidth = 1f
                     )
                     // Subtle highlight border on fader cap
                     drawRoundRect(

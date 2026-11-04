@@ -344,19 +344,19 @@ export const HeraApp: React.FC = () => {
 
     const headerH = topHeaderRef.current?.offsetHeight || 54;
     const voicingBarH = presetBarRef.current?.offsetHeight || 56;
-    const arpAllowance = isArpSectionOpen && !isKeyboardOpen ? 36 : 0;
+    const arpAllowance = isArpSectionOpen && !isKeyboardOpen ? 44 : 0;
     // Area of Interest 1: Top Header Bar + Faders/Filters/FX Section + Voicing/Preset Bar
-    // Faders smoothly adapt between 0.88x (-12% retraction) and 1.20x (+20% elongation)
-    // so Area of Interest 1 fits 100% of the viewport with zero vertical scroll leftover ("sobra").
+    // Faders smoothly adapt between 0.82x and 2.15x ("efeito de sanfona") across all screen proportions
+    // (Smartphones, Tablets, Samsung DeX, Monitors) so Area of Interest 1 fits 100% of the viewport.
     const nonRackArea1H = headerH + voicingBarH + arpAllowance + 16;
     const baseRackH = 268;
 
-    const availableForRack = Math.max(baseRackH * 0.88, vh - nonRackArea1H);
+    const availableForRack = Math.max(baseRackH * 0.82, vh - nonRackArea1H);
     const rawElongation = availableForRack / baseRackH;
-    const elongation = Math.min(1.2, Math.max(0.88, rawElongation));
+    const elongation = Math.min(2.15, Math.max(0.82, rawElongation));
 
-    const maxArea1H = headerH + voicingBarH + 16 + baseRackH * 1.2 + 24;
-    const widescreenFit = aspect >= 1.65 && vh <= maxArea1H && (!isArpSectionOpen || isKeyboardOpen);
+    const maxArea1H = headerH + voicingBarH + 16 + baseRackH * 2.15 + 24;
+    const widescreenFit = aspect >= 1.25 && vh <= maxArea1H && (!isArpSectionOpen || isKeyboardOpen);
 
     return {
       faderElongation: elongation,

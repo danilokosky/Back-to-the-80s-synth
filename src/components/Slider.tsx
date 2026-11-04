@@ -287,15 +287,23 @@ export const Slider: React.FC<SliderProps> = ({
         {/* Tick scale marks left side - strictly z-0 behind the fader cap */}
         <div className="absolute left-0 top-2.5 bottom-2.5 flex flex-col justify-between items-end pr-0.5 text-[6px] font-mono text-zinc-500 pointer-events-none z-0">
           <span>100</span>
+          <span className="hidden sm:inline text-[5px] text-zinc-600">75</span>
           <span>50</span>
+          <span className="hidden sm:inline text-[5px] text-zinc-600">25</span>
           <span>0</span>
         </div>
 
         {/* Tick scale marks right side - strictly z-0 behind the fader cap */}
         <div className="absolute right-0 top-2.5 bottom-2.5 flex flex-col justify-between items-start pl-0.5 text-[7px] font-mono text-zinc-500 pointer-events-none z-0">
-          <div className="w-1.5 h-[1px] bg-zinc-600" />
-          <div className="w-2 h-[1px] bg-zinc-500" />
-          <div className="w-1.5 h-[1px] bg-zinc-600" />
+          <div className="w-1.5 h-[1px] bg-zinc-500" />
+          <div className="w-1 h-[1px] bg-zinc-700" />
+          <div className="w-1.25 h-[1px] bg-zinc-600" />
+          <div className="w-1 h-[1px] bg-zinc-700" />
+          <div className="w-2 h-[1px] bg-zinc-400" />
+          <div className="w-1 h-[1px] bg-zinc-700" />
+          <div className="w-1.25 h-[1px] bg-zinc-600" />
+          <div className="w-1 h-[1px] bg-zinc-700" />
+          <div className="w-1.5 h-[1px] bg-zinc-500" />
         </div>
 
         {/* Vertical Groove Slot */}
