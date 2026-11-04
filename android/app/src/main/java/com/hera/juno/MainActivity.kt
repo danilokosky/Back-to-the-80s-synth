@@ -1,7 +1,9 @@
 package com.hera.juno
 
+import android.content.Context
 import android.net.Uri
 import android.os.Bundle
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -93,6 +95,7 @@ class MainActivity : ComponentActivity() {
     private var modWheelState by mutableFloatStateOf(0f)
     private var projectedSectionState by mutableStateOf<MidiSection?>(null)
     private var projectedSectionTriggerCount by mutableIntStateOf(0)
+    private var keepScreenOnState by mutableStateOf(true)
 
     private fun getVisualRackSectionForParam(param: SynthParam): MidiSection? {
         // LFOTrigMode is visually rendered inside the DCO section card's selector column
@@ -111,9 +114,21 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun applyKeepScreenOn(enabled: Boolean) {
+        if (enabled) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        window.decorView.keepScreenOn = enabled
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val appPrefs = getSharedPreferences("hera_app_prefs", Context.MODE_PRIVATE)
+        keepScreenOnState = appPrefs.getBoolean("keep_screen_on", true)
         enableImmersiveFullscreen()
+        applyKeepScreenOn(keepScreenOnState)
 
         // Initialize default parameters
         val initialPreset = PresetRepository.FACTORY_PRESETS.first()
@@ -182,6 +197,18 @@ class MainActivity : ComponentActivity() {
                         modWheelState = modWheelState,
                         projectedSection = projectedSectionState,
                         projectedSectionTriggerCount = projectedSectionTriggerCount,
+                        keepScreenOn = keepScreenOnState,
+                        onToggleKeepScreenOn = {
+                            val next = !keepScreenOnState
+                            keepScreenOnState = next
+                            appPrefs.edit().putBoolean("keep_screen_on", next).apply()
+                            applyKeepScreenOn(next)
+                            Toast.makeText(
+                                this@MainActivity,
+                                if (next) "Tela sempre ligada: ATIVADO" else "Tela sempre ligada: DESATIVADO",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        },
                         onDismissProjectedSection = { projectedSectionState = null },
                         onUpdatePitchMod = { bend, mod ->
                             pitchBendState = bend
@@ -213,6 +240,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        enableImmersiveFullscreen()
+        applyKeepScreenOn(keepScreenOnState)
+    }
+
     private fun enableImmersiveFullscreen() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         val controller = WindowInsetsControllerCompat(window, window.decorView)
@@ -223,7 +256,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) enableImmersiveFullscreen()
+        if (hasFocus) {
+            enableImmersiveFullscreen()
+            applyKeepScreenOn(keepScreenOnState)
+        }
     }
 
     override fun onDestroy() {
@@ -243,6 +279,8 @@ fun HeraJunoNativeScreen(
     modWheelState: Float,
     projectedSection: MidiSection?,
     projectedSectionTriggerCount: Int,
+    keepScreenOn: Boolean,
+    onToggleKeepScreenOn: () -> Unit,
     onDismissProjectedSection: () -> Unit,
     onUpdatePitchMod: (Float, Float) -> Unit,
     onNotifyUiChanged: () -> Unit,
@@ -548,6 +586,8 @@ fun HeraJunoNativeScreen(
                         onNotifyUiChanged = onNotifyUiChanged,
                         onOpenChannelsModal = { showChannelsDialog = true },
                         onToggleProfileExpanded = { showProfileDialog = !showProfileDialog },
+                        keepScreenOn = keepScreenOn,
+                        onToggleKeepScreenOn = onToggleKeepScreenOn,
                         onPanic = {
                             holdSustain = false
                             onPanicAllNotesOff()
@@ -1340,6 +1380,8 @@ private fun TopHeaderBar(
     onNotifyUiChanged: () -> Unit,
     onOpenChannelsModal: () -> Unit,
     onToggleProfileExpanded: () -> Unit,
+    keepScreenOn: Boolean,
+    onToggleKeepScreenOn: () -> Unit,
     onPanic: () -> Unit
 ) {
     val headerScroll = rememberScrollState()
@@ -1737,11 +1779,40 @@ private fun TopHeaderBar(
                 )
             }
 
-            // GROUP 4: Panic Button (Keyboard toggle moved next to ARP in the Preset bar)
+            // GROUP 4: Keep Screen On Toggle ("TELA ON") + Panic Button
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.5.dp),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(if (keepScreenOn) Color(0xFF0F2922) else Color(0xFF141822))
+                        .border(
+                            1.dp,
+                            if (keepScreenOn) JunoGreenReady else Color(0xFF2B3242),
+                            RoundedCornerShape(4.dp)
+                        )
+                        .clickable { onToggleKeepScreenOn() }
+                        .padding(horizontal = 5.5.dp, vertical = 2.5.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(5.dp)
+                            .clip(CircleShape)
+                            .background(if (keepScreenOn) JunoGreenReady else Color(0xFF4B5563))
+                    )
+                    Text(
+                        text = if (keepScreenOn) "TELA ON" else "TELA AUTO",
+                        color = if (keepScreenOn) Color(0xFF6EE7B7) else Color(0xFF9CA3AF),
+                        fontSize = 7.8.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier

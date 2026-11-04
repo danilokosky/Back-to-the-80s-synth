@@ -9,7 +9,8 @@
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen.multitouch.jazzhand" android:required="false" />
 
-    <!-- Bluetooth MIDI Permissions -->
+    <!-- Bluetooth MIDI & Keep Screen Awake Permissions -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />

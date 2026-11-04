@@ -106,6 +106,81 @@ export const HeraApp: React.FC = () => {
   const [isArpEnabled, setIsArpEnabled] = useState<boolean>(false);
   const [isKeyboardOpen, setIsKeyboardOpen] = useState<boolean>(true);
 
+  // Keep Screen On (Wake Lock) - Active by default so playing via external MIDI controller never locks the screen
+  const [keepScreenOn, setKeepScreenOn] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('hera_keep_screen_on_v1');
+      return saved === null ? true : saved === 'true';
+    } catch {
+      return true;
+    }
+  });
+  const wakeLockSentinelRef = useRef<any>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('hera_keep_screen_on_v1', String(keepScreenOn));
+    } catch {
+      // ignore storage errors
+    }
+
+    let isCancelled = false;
+
+    const releaseWakeLock = async () => {
+      if (wakeLockSentinelRef.current) {
+        try {
+          await wakeLockSentinelRef.current.release();
+        } catch {
+          // ignore
+        }
+        wakeLockSentinelRef.current = null;
+      }
+    };
+
+    const requestWakeLock = async () => {
+      if (!keepScreenOn || isCancelled) return;
+      if (typeof navigator !== 'undefined' && 'wakeLock' in navigator && document.visibilityState === 'visible') {
+        try {
+          if (!wakeLockSentinelRef.current || wakeLockSentinelRef.current.released) {
+            wakeLockSentinelRef.current = await (navigator as any).wakeLock.request('screen');
+          }
+        } catch {
+          // Will retry on next visibilitychange or user interaction
+        }
+      }
+    };
+
+    if (keepScreenOn) {
+      requestWakeLock();
+    } else {
+      releaseWakeLock();
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && keepScreenOn) {
+        requestWakeLock();
+      }
+    };
+
+    const handleUserGesture = () => {
+      if (keepScreenOn && (!wakeLockSentinelRef.current || wakeLockSentinelRef.current.released)) {
+        requestWakeLock();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pointerdown', handleUserGesture, { passive: true });
+    window.addEventListener('keydown', handleUserGesture, { passive: true });
+
+    return () => {
+      isCancelled = true;
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pointerdown', handleUserGesture);
+      window.removeEventListener('keydown', handleUserGesture);
+      releaseWakeLock();
+    };
+  }, [keepScreenOn]);
+
   // Responsive viewport dimensions for Faders Section proportional zoom & elongation (max +20%)
   const [viewportSize, setViewportSize] = useState<{ width: number; height: number }>(() => ({
     width: typeof window !== 'undefined' ? window.innerWidth : 1280,
@@ -2520,12 +2595,35 @@ export const HeraApp: React.FC = () => {
                   </span>
                 </div>
 
+                {/* Keep Screen On Toggle (TELA ON / TELA AUTO) */}
+                <button
+                  type="button"
+                  onClick={() => setKeepScreenOn((prev) => !prev)}
+                  className={`flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-mono font-extrabold transition-colors cursor-pointer border ${
+                    keepScreenOn
+                      ? 'bg-emerald-950/70 text-emerald-300 border-emerald-500/80 shadow-[0_0_8px_rgba(16,185,129,0.25)]'
+                      : 'bg-zinc-900 text-zinc-400 border-zinc-700 hover:text-zinc-200'
+                  }`}
+                  title={
+                    keepScreenOn
+                      ? 'Tela Sempre Ligada: ATIVADO (impede que a tela bloqueie enquanto toca pelo controlador MIDI)'
+                      : 'Tela Sempre Ligada: DESATIVADO (clique para manter a tela acesa)'
+                  }
+                >
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      keepScreenOn ? 'bg-emerald-400 shadow-[0_0_6px_#34d399]' : 'bg-zinc-500'
+                    }`}
+                  />
+                  <span>{keepScreenOn ? 'TELA ON' : 'TELA AUTO'}</span>
+                </button>
+
                 {/* Help button */}
                 <button
                   type="button"
                   onClick={() => setShowHelp(true)}
                   className="p-1 text-zinc-400 hover:text-zinc-200 rounded cursor-pointer"
-                  title="Ajuda e manual do Juno-60"
+                  title="Ajuda e manual do sintetizador"
                 >
                   <HelpCircle size={15} />
                 </button>
