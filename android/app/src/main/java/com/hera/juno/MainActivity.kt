@@ -519,21 +519,43 @@ fun HeraJunoNativeScreen(
                         0f
                     }
 
+                    val viewportHeightPx = constraints.maxHeight
+                    val rainbowPx = with(currentDensity) { 3.dp.roundToPx() }
+                    val scrollbarPx = with(currentDensity) { 8.dp.roundToPx() }
+                    val separatorsTotalPx = rainbowPx * 2 + scrollbarPx
+
                     // Fixed static heights inside Area of Interest 1:
-                    // Header + TopRainbow (3dp) + Horizontal Scrollbar (8dp) + BottomRainbow (3dp) + VoicingBar + 2dp safety buffer
-                    val staticNonRackArea1Dp = headerHeightDp + 3f + 8f + 3f + voicingHeightDp + 2f
+                    // Header + TopRainbow (3dp) + Horizontal Scrollbar (8dp) + BottomRainbow (3dp) + VoicingBar
+                    val staticNonRackArea1Dp = headerHeightDp + 3f + 8f + 3f + voicingHeightDp
                     val baseRackHeightDp = 232f
 
-                    // Dynamic target Faders Section elongation (strictly capped at 1.00f .. 1.20f = max +20% of real proportion).
-                    // Smoothly adapts when inline drawers (ARP / PRESETS / PERFIL) unfold so the faders gently breathe and
-                    // fit elements on screen, while keeping Area of Interest 1 (Header + Faders + Voicing) at 100% fit!
-                    val inlineDrawerAllowanceDp =
-                        (if (arpExpanded && !showKeyboard) (arpHeightDp + 8f) * 0.65f else 0f) +
-                        (if (showPresetsDialog && !showKeyboard) 56f else 0f) +
-                        (if (showProfileDialog) 28f else 0f)
-                    val targetFaderElongation = remember(maxHeight.value, staticNonRackArea1Dp, inlineDrawerAllowanceDp) {
-                        val idealRackDp = (maxHeight.value - staticNonRackArea1Dp - inlineDrawerAllowanceDp).coerceAtLeast(baseRackHeightDp)
-                        (idealRackDp / baseRackHeightDp).coerceIn(1.00f, 1.20f)
+                    // Dynamic target Faders Section adaptation (0.88f .. 1.20f: allows up to ~12% retraction — typically ~5%
+                    // on widescreen phones — and up to +20% elongation on taller screens).
+                    // Computed from exact pixel measurements so Area of Interest 1 (Header + Faders + Voicing)
+                    // equals 100.0% of viewportHeightPx with ZERO "sobra"!
+                    val baseRackHeightPx = with(currentDensity) { baseRackHeightDp.dp.toPx() }.coerceAtLeast(1f)
+                    val inlineDrawerAllowancePx = with(currentDensity) {
+                        (
+                            (if (arpExpanded && !showKeyboard) (arpHeightDp + 6f) * 0.65f else 0f) +
+                            (if (showPresetsDialog && !showKeyboard) 52f else 0f) +
+                            (if (showProfileDialog) 26f else 0f)
+                        ).dp.toPx()
+                    }
+                    val targetFaderElongation = remember(
+                        viewportHeightPx,
+                        measuredHeaderPx,
+                        measuredVoicingPx,
+                        separatorsTotalPx,
+                        inlineDrawerAllowancePx,
+                        maxHeight.value,
+                        staticNonRackArea1Dp
+                    ) {
+                        val idealRackPx = if (measuredHeaderPx > 0 && measuredVoicingPx > 0) {
+                            (viewportHeightPx - measuredHeaderPx - measuredVoicingPx - separatorsTotalPx).toFloat() - inlineDrawerAllowancePx
+                        } else {
+                            with(currentDensity) { (maxHeight.value - staticNonRackArea1Dp).dp.toPx() } - inlineDrawerAllowancePx
+                        }
+                        (idealRackPx / baseRackHeightPx).coerceIn(0.88f, 1.20f)
                     }
                     // Smoothly animated fader elongation state — read only in Modifier.layout for 0-recomposition 120fps performance
                     val faderElongationState = animateFloatAsState(
@@ -546,7 +568,7 @@ fun HeraJunoNativeScreen(
                     // Size the Keyboard in Area of Interest 2 so that when scrolled to the bottom (maxScroll),
                     // VoicingPresetBar sits right at the top of the screen, followed by Arpeggiator and Keyboard to the bottom!
                     val keyboardSectionHeight = remember(maxHeight.value, voicingHeightDp, arpHeightDp, arpExpanded) {
-                        val availableBelowVoicingDp = maxHeight.value - voicingHeightDp - arpHeightDp - (if (arpExpanded) 12f else 8f)
+                        val availableBelowVoicingDp = maxHeight.value - voicingHeightDp - arpHeightDp - 6f
                         availableBelowVoicingDp.coerceIn(182f, 276f).dp
                     }
 
@@ -721,9 +743,29 @@ fun HeraJunoNativeScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .layout { measurable, constraints ->
-                                    val elong = faderElongationState.value.coerceIn(1.0f, 1.20f)
-                                    val targetH = (232f * elong).dp.roundToPx()
-                                    val padV = (4f * elong).dp.roundToPx()
+                                    val elong = faderElongationState.value.coerceIn(0.88f, 1.20f)
+                                    val animatedH = (232f * elong).dp.roundToPx()
+                                    val minRackPx = (232f * 0.88f).dp.roundToPx()
+                                    val maxRackPx = (232f * 1.20f).dp.roundToPx()
+                                    // When in standard Area 1 view (no inline top/mid drawer open) and measurements are ready,
+                                    // clamp to exact integer pixel remainder so Header + Separators + Rack + Voicing == viewportHeightPx (0px sobra!)
+                                    val exactArea1RackPx = if (measuredHeaderPx > 0 && measuredVoicingPx > 0) {
+                                        (viewportHeightPx - measuredHeaderPx - measuredVoicingPx - separatorsTotalPx)
+                                            .coerceIn(minRackPx, maxRackPx)
+                                    } else {
+                                        animatedH
+                                    }
+                                    val targetH = if (
+                                        !arpExpanded &&
+                                        !showPresetsDialog &&
+                                        !showProfileDialog &&
+                                        kotlin.math.abs(animatedH - exactArea1RackPx) <= 6
+                                    ) {
+                                        exactArea1RackPx
+                                    } else {
+                                        animatedH
+                                    }
+                                    val padV = (3.5f * elong).dp.roundToPx()
                                     val innerH = (targetH - padV * 2).coerceAtLeast(0)
                                     val placeable = measurable.measure(
                                         constraints.copy(minHeight = innerH, maxHeight = innerH)
@@ -821,7 +863,7 @@ fun HeraJunoNativeScreen(
                             .fillMaxWidth()
                             .background(Color(0xFF090B10))
                             .onSizeChanged { measuredVoicingPx = it.height }
-                            .padding(horizontal = 6.dp, vertical = 4.dp)
+                            .padding(horizontal = 6.dp, vertical = 2.5.dp)
                     ) {
                         VoicingPresetBar(
                             presetIndex = currentPresetIndex,
@@ -2451,7 +2493,7 @@ private fun VoicingPresetBar(
             .background(Color(0xFF10131B), RoundedCornerShape(5.dp))
             .border(1.dp, Color(0xFF23293A), RoundedCornerShape(5.dp))
             .horizontalScroll(barScroll)
-            .padding(horizontal = 10.dp, vertical = 6.dp),
+            .padding(horizontal = 7.dp, vertical = 4.5.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
@@ -2459,7 +2501,7 @@ private fun VoicingPresetBar(
         Box(contentAlignment = Alignment.Center) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
                 modifier = Modifier
                     .background(if (selectWaiting) Color(0xFF0A2236) else Color(0xFF07090D), RoundedCornerShape(4.dp))
                     .border(
@@ -2479,7 +2521,7 @@ private fun VoicingPresetBar(
                             onToggleTimbresExpanded()
                         }
                     }
-                    .padding(horizontal = 10.dp, vertical = 5.dp)
+                    .padding(horizontal = 7.dp, vertical = 4.dp)
             ) {
                 // BANK Column (Title above + Centered Red LED box below)
                 Column(
@@ -2527,11 +2569,11 @@ private fun VoicingPresetBar(
                         .background(Color(0xFF202636))
                 )
 
-                // PRESET NAME Column (Title above + Preset Name below)
+                // PRESET NAME Column (Title above + Preset Name below — sized so BANK, PATCH, Strings 1 and all buttons fit 100% on screen!)
                 Column(
                     horizontalAlignment = Alignment.Start,
                     verticalArrangement = Arrangement.spacedBy(2.dp),
-                    modifier = Modifier.widthIn(min = 125.dp, max = 200.dp)
+                    modifier = Modifier.widthIn(min = 82.dp, max = 142.dp)
                 ) {
                     Text(
                         text = "PRESET NAME",
@@ -2581,12 +2623,12 @@ private fun VoicingPresetBar(
             )
         }
 
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(6.dp))
 
         // RIGHT: Action buttons + Presets + ARP button + TECLADO button
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(4.5.dp)
         ) {
             // [ < ] Prev Chevron
             Box(contentAlignment = Alignment.Center) {
@@ -2689,20 +2731,20 @@ private fun VoicingPresetBar(
             // [ 💾 Save ]
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.5.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
                 modifier = Modifier
                     .height(28.dp)
                     .clip(RoundedCornerShape(4.dp))
                     .background(Color(0xFF1B160E))
                     .border(1.dp, Color(0xFF3D2E14), RoundedCornerShape(4.dp))
                     .clickable { onSaveUserPreset() }
-                    .padding(horizontal = 9.dp)
+                    .padding(horizontal = 7.dp)
             ) {
-                FloppySaveIcon(modifier = Modifier.size(13.dp), color = Color(0xFFFBBF24))
+                FloppySaveIcon(modifier = Modifier.size(12.dp), color = Color(0xFFFBBF24))
                 Text(
                     text = "Save",
                     color = Color(0xFFFBBF24),
-                    fontSize = 8.5.sp,
+                    fontSize = 8.2.sp,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold
                 )
@@ -2711,20 +2753,20 @@ private fun VoicingPresetBar(
             // [ 📥 XML ]
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.5.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
                 modifier = Modifier
                     .height(28.dp)
                     .clip(RoundedCornerShape(4.dp))
                     .background(Color(0xFF0D1E18))
                     .border(1.dp, Color(0xFF1B3D30), RoundedCornerShape(4.dp))
                     .clickable { onExportPreset() }
-                    .padding(horizontal = 9.dp)
+                    .padding(horizontal = 7.dp)
             ) {
-                DownloadTrayIcon(modifier = Modifier.size(13.dp), color = Color(0xFF34D399))
+                DownloadTrayIcon(modifier = Modifier.size(12.dp), color = Color(0xFF34D399))
                 Text(
                     text = "XML",
                     color = Color(0xFFE5E7EB),
-                    fontSize = 8.5.sp,
+                    fontSize = 8.2.sp,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold
                 )
@@ -2733,20 +2775,20 @@ private fun VoicingPresetBar(
             // [ 📤 Load ]
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.5.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
                 modifier = Modifier
                     .height(28.dp)
                     .clip(RoundedCornerShape(4.dp))
                     .background(Color(0xFF0D1B29))
                     .border(1.dp, Color(0xFF1B334D), RoundedCornerShape(4.dp))
                     .clickable { onImportPreset() }
-                    .padding(horizontal = 9.dp)
+                    .padding(horizontal = 7.dp)
             ) {
-                UploadTrayIcon(modifier = Modifier.size(13.dp), color = Color(0xFF38BDF8))
+                UploadTrayIcon(modifier = Modifier.size(12.dp), color = Color(0xFF38BDF8))
                 Text(
                     text = "Load",
                     color = Color(0xFFE5E7EB),
-                    fontSize = 8.5.sp,
+                    fontSize = 8.2.sp,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold
                 )
@@ -2755,7 +2797,7 @@ private fun VoicingPresetBar(
             // [ ≡ PRESETS (56) ▾ ]
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.5.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
                 modifier = Modifier
                     .height(28.dp)
                     .clip(RoundedCornerShape(4.dp))
@@ -2766,13 +2808,13 @@ private fun VoicingPresetBar(
                         RoundedCornerShape(4.dp)
                     )
                     .clickable { onToggleTimbresExpanded() }
-                    .padding(horizontal = 9.dp)
+                    .padding(horizontal = 7.5.dp)
             ) {
                 HamburgerLinesIcon(modifier = Modifier.size(11.dp), color = Color(0xFFFBBF24))
                 Text(
                     text = "PRESETS (${allPresets.size})",
                     color = Color(0xFFFBBF24),
-                    fontSize = 8.5.sp,
+                    fontSize = 8.2.sp,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.ExtraBold
                 )
@@ -2788,7 +2830,7 @@ private fun VoicingPresetBar(
                 Text(
                     text = if (isTimbresExpanded) "▴" else "▾",
                     color = Color(0xFFFBBF24),
-                    fontSize = 8.5.sp,
+                    fontSize = 8.2.sp,
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -2796,7 +2838,7 @@ private fun VoicingPresetBar(
             // [ ARP ▾ ] Button to expand/collapse the ARP section directly from Voices/Presets bar
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(3.5.dp),
                 modifier = Modifier
                     .height(28.dp)
                     .clip(RoundedCornerShape(4.dp))
@@ -2817,7 +2859,7 @@ private fun VoicingPresetBar(
                         RoundedCornerShape(4.dp)
                     )
                     .clickable { onToggleArpExpanded() }
-                    .padding(horizontal = 9.dp)
+                    .padding(horizontal = 7.5.dp)
             ) {
                 if (arpEnabled) {
                     Box(
@@ -2830,14 +2872,14 @@ private fun VoicingPresetBar(
                 Text(
                     text = "ARP",
                     color = if (arpEnabled || isArpExpanded) JunoAmberLed else Color(0xFFD1D5DB),
-                    fontSize = 8.5.sp,
+                    fontSize = 8.2.sp,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.ExtraBold
                 )
                 Text(
                     text = if (isArpExpanded) "▴" else "▾",
                     color = if (arpEnabled || isArpExpanded) JunoAmberLed else Color(0xFF9CA3AF),
-                    fontSize = 8.5.sp,
+                    fontSize = 8.2.sp,
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -2845,7 +2887,7 @@ private fun VoicingPresetBar(
             // [ TECLADO ▾ ] Button to expand/collapse the Keyboard section directly from Voices/Presets bar
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(3.5.dp),
                 modifier = Modifier
                     .height(28.dp)
                     .clip(RoundedCornerShape(4.dp))
@@ -2856,19 +2898,19 @@ private fun VoicingPresetBar(
                         RoundedCornerShape(4.dp)
                     )
                     .clickable { onToggleKeyboard() }
-                    .padding(horizontal = 9.dp)
+                    .padding(horizontal = 7.5.dp)
             ) {
                 Text(
                     text = "TECLADO",
                     color = if (showKeyboard) JunoAmberLed else Color(0xFFD1D5DB),
-                    fontSize = 8.5.sp,
+                    fontSize = 8.2.sp,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.ExtraBold
                 )
                 Text(
                     text = if (showKeyboard) "▴" else "▾",
                     color = if (showKeyboard) JunoAmberLed else Color(0xFF9CA3AF),
-                    fontSize = 8.5.sp,
+                    fontSize = 8.2.sp,
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -4271,11 +4313,11 @@ private fun SynthModuleCard(
             }
         }
     ) { measurables, _ ->
-        val elong = elongationState.value.coerceIn(1.0f, 1.20f)
+        val elong = elongationState.value.coerceIn(0.88f, 1.20f)
         val totalH = (224f * elong).dp.roundToPx()
         val headerEstH = 19.dp.roundToPx()
         val footerEstH = 15.dp.roundToPx()
-        val padV = (10f * elong).dp.roundToPx()
+        val padV = (4f * elong).dp.roundToPx()
         val contentMaxH = (totalH - headerEstH - footerEstH - padV * 2).coerceAtLeast(40)
 
         // 1. Measure content once with unconstrained width to get natural card width
@@ -4342,7 +4384,7 @@ private fun JunoParamFader(
         modifier = Modifier
             .width(42.dp)
             .layout { measurable, constraints ->
-                val elong = elongationState.value.coerceIn(1.0f, 1.20f)
+                val elong = elongationState.value.coerceIn(0.88f, 1.20f)
                 val targetH = (faderHeight.value * elong).dp.roundToPx()
                 val placeable = measurable.measure(
                     constraints.copy(minHeight = targetH, maxHeight = targetH)
