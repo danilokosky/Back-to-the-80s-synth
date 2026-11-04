@@ -101,8 +101,8 @@ export const HeraApp: React.FC = () => {
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [recordedAudioUrl, setRecordedAudioUrl] = useState<string | null>(null);
 
-  // Collapsible ARP & Keyboard sections controlled from the Voices/Preset bar
-  const [isArpSectionOpen, setIsArpSectionOpen] = useState<boolean>(false);
+  // Collapsible ARP & Keyboard sections controlled from the Voices/Preset bar (ARP open by default so the 3 primary sections are highlighted on launch)
+  const [isArpSectionOpen, setIsArpSectionOpen] = useState<boolean>(true);
   const [isArpEnabled, setIsArpEnabled] = useState<boolean>(false);
   const [isKeyboardOpen, setIsKeyboardOpen] = useState<boolean>(true);
 
@@ -202,36 +202,24 @@ export const HeraApp: React.FC = () => {
   }, []);
 
   const { faderElongation, rackZoomFactor } = (() => {
-    const vw = viewportSize.width;
     const vh = viewportSize.height;
-    const aspect = vw / Math.max(1, vh);
-    const isSmartphone = vh < 520 || (aspect >= 1.8 && vh < 560);
 
     const headerH = topHeaderRef.current?.offsetHeight || 54;
-    const presetH = presetBarRef.current?.offsetHeight || 64;
-    const keyboardH = keyboardSectionRef.current?.offsetHeight || 205;
-    const nonRackAboveKeyboardH = headerH + presetH + 14;
+    const presetAndArpH = presetBarRef.current?.offsetHeight || (isArpSectionOpen ? 108 : 62);
+    // Across ALL screens (Smartphone landscape, Tablet, Samsung DeX, Large Monitors, and TVs):
+    // Prioritize fitting the 3 primary sections in the initial viewport frame:
+    //   1. Top Header Bar
+    //   2. Full Faders, Filters & Effects Synth Rack (elongation strictly capped at +20% = 1.20)
+    //   3. Presets Bar + Complete Arpeggiator Section
+    // Avoid subtracting keyboard height so the Piano Keyboard stays below the fold on initial view
+    // (unless an ultra-tall screen aspect ratio naturally reveals it after the faders reach their +20% cap).
+    const nonRackPrimaryH = headerH + presetAndArpH + 16;
     const baseRackH = 236;
 
-    if (isSmartphone) {
-      // On Smartphone: Header + Faders Section + Preset Bar fill 100% of viewport height so Keyboard stays hidden below on scroll
-      const targetRackH = Math.max(baseRackH, vh - nonRackAboveKeyboardH);
-      const totalScale = Math.max(1.0, targetRackH / baseRackH);
-      const elongation = Math.min(1.2, Math.max(1.0, totalScale)); // Never exceed +20%
-      const zoom = Math.min(1.45, Math.max(1.0, totalScale / elongation));
-      return { faderElongation: elongation, rackZoomFactor: zoom };
-    }
-
-    if (!isKeyboardOpen) {
-      // Tablet / Window / Fullscreen TV/Monitor with Keyboard hidden: elongate faders up to max 20%
-      return { faderElongation: 1.2, rackZoomFactor: 1.1 };
-    }
-
-    // Tablet / Window / Fullscreen TV/Monitor with complete Keyboard visible:
-    const targetRackH = Math.max(baseRackH, vh - nonRackAboveKeyboardH - keyboardH - 16);
+    const targetRackH = Math.max(baseRackH, vh - nonRackPrimaryH);
     const totalScale = Math.max(1.0, targetRackH / baseRackH);
-    const elongation = Math.min(1.2, Math.max(1.0, totalScale)); // Never exceed +20%
-    const zoom = Math.min(1.22, Math.max(1.0, totalScale / elongation));
+    const elongation = Math.min(1.2, Math.max(1.0, totalScale)); // Strictly capped at max +20%
+    const zoom = Math.min(1.38, Math.max(1.0, totalScale / elongation));
     return { faderElongation: elongation, rackZoomFactor: zoom };
   })();
 

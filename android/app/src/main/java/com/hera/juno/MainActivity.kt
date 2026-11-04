@@ -297,13 +297,13 @@ fun HeraJunoNativeScreen(
     var currentPresetIndex by remember { mutableIntStateOf(0) }
     val currentPreset = allPresets.getOrElse(currentPresetIndex) { activeFactoryPresets.first() }
 
-    // Arpeggiator State (Full Arpeggiator section is toggled via the ARP button next to Presets)
+    // Arpeggiator State (Open by default so Header + Faders + Presets/Arpeggiator form the 3 primary sections on launch)
     var arpEnabled by remember { mutableStateOf(false) }
     var arpMode by remember { mutableIntStateOf(0) } // 0=UP, 1=UP/DN, 2=DOWN
     var arpRange by remember { mutableIntStateOf(1) } // 1..3
     var arpRateDiv by remember { mutableIntStateOf(8) } // 4, 8, 16
     var arpBpm by remember { mutableFloatStateOf(120f) }
-    var arpExpanded by remember { mutableStateOf(false) }
+    var arpExpanded by remember { mutableStateOf(true) }
 
     // Keyboard & Modals State
     var showKeyboard by remember { mutableStateOf(true) }
@@ -436,13 +436,14 @@ fun HeraJunoNativeScreen(
         val rawHeightDp = maxHeight
         val rawAspectRatio = rawWidthDp.value / rawHeightDp.value.coerceAtLeast(1f)
 
-        // Distinguish Smartphone landscape screens from Tablet / Window / Fullscreen TV or Monitor viewports:
-        // - On Smartphone: Header + Faders Section (zoomed & elongated up to 20%) + Voices/Presets Bar fill 100% of the window,
-        //   keeping the Piano Keyboard completely hidden below the fold and accessible via vertical scroll.
-        // - On Tablet / Window / Fullscreen Monitor or TV: Keep the complete Piano Keyboard visible on screen when open;
-        //   if the Keyboard is hidden, elongate the Faders Section up to 20% of its original proportion.
-        val isSmartphoneViewport = rawHeightDp < 480.dp || (rawAspectRatio >= 1.80f && rawHeightDp < 540.dp)
-        val referenceCanvasHeightDp = if (isSmartphoneViewport) 435.dp else 568.dp
+        // Across ALL viewports (Smartphone landscape, Tablet, Samsung DeX, Large Monitors, and TVs):
+        // Prioritize fitting the 3 primary sections in the initial viewport frame:
+        //   1. Top Header Bar
+        //   2. Full Faders, Filters & Effects Synth Rack (flexible elongation strictly capped at +20% = 1.20f)
+        //   3. Voicing/Presets Bar + Complete Arpeggiator Section
+        // Avoid showing the Piano Keyboard in the initial frame (keeping it accessible via vertical scroll),
+        // unless a very tall screen aspect ratio naturally reveals it after the faders reach their +20% cap.
+        val referenceCanvasHeightDp = 436.dp
         val dpiScale = (rawHeightDp / referenceCanvasHeightDp).coerceIn(0.75f, 2.6f)
         val previewMatchedDensity = remember(baseDensity, dpiScale) {
             Density(
@@ -474,45 +475,29 @@ fun HeraJunoNativeScreen(
                     val keyboardSectionHeight = 190.dp
                     val responsiveSemitones = if (maxWidth >= 1200.dp) 48 else 36
 
-                    // Fixed height of non-rack elements above the keyboard:
-                    // TopHeaderBar (46dp) + Top Rainbow (2.5dp) + Scrollbar (8dp) + Bottom Rainbow (2.5dp) + VoicingPresetBar (52dp) = 111dp
-                    val nonRackAboveKeyboardDp = 111f
+                    // Height of non-rack elements in the 3 primary highlighted sections:
+                    // TopHeaderBar (44dp) + Top Rainbow (3dp) + Scrollbar (8dp) + Bottom Rainbow (3dp) + VoicingPresetBar (42dp) + Paddings (8dp) = 108dp
+                    // Plus ArpeggiatorKeyboardBar (40dp when arpExpanded) so the complete Arpeggiator fits inside the first screen!
+                    val nonRackBaseDp = 108f
+                    val arpBarDp = if (arpExpanded) 40f else 0f
+                    val nonRackPrimaryFrameDp = nonRackBaseDp + arpBarDp
                     val baseRackHeightDp = 232f
-                    val fullKeyboardWrapperDp = 198f
 
-                    // Calculate Faders Section proportional elongation (capped at +20% = 1.20f) and section-only zoom:
+                    // Calculate Faders Section proportional elongation (strictly capped at +20% = 1.20f) and section-only zoom
+                    // so that Header + Faders Rack + Presets + Arpeggiator fill the primary viewport frame without showing the keyboard:
                     val (faderElongation, rackZoomFactor) = remember(
                         maxHeight,
-                        isSmartphoneViewport,
                         showKeyboard,
                         arpExpanded,
                         showPresetsDialog
                     ) {
-                        if (isSmartphoneViewport) {
-                            // Fill the smartphone window with Header + Faders Rack + Voices/Presets Bar
-                            // so the Keyboard stays 100% hidden below and accessible on vertical scroll:
-                            val targetRackDp = (maxHeight.value - nonRackAboveKeyboardDp).coerceAtLeast(baseRackHeightDp)
-                            val totalScale = (targetRackDp / baseRackHeightDp).coerceAtLeast(1.0f)
-                            val elongation = totalScale.coerceIn(1.0f, 1.20f) // Never exceed +20% elongation
-                            val zoom = (totalScale / elongation).coerceIn(1.0f, 1.45f)
-                            elongation to zoom
-                        } else if (!showKeyboard) {
-                            // Tablet / Window / Fullscreen TV/Monitor when Keyboard is hidden:
-                            // Elongate faders up to the maximum 20% of original proportion
-                            val elongation = 1.20f
-                            val zoom = 1.12f
-                            elongation to zoom
-                        } else {
-                            // Tablet / Window / Fullscreen TV/Monitor with complete Keyboard visible:
-                            // Fit Header + Faders Rack + Voices/Presets Bar + Complete Keyboard in the viewport
-                            val extraDrawersDp = (if (arpExpanded) 44f else 0f) + (if (showPresetsDialog) 140f else 0f)
-                            val targetRackDp = (maxHeight.value - nonRackAboveKeyboardDp - fullKeyboardWrapperDp - extraDrawersDp)
-                                .coerceAtLeast(baseRackHeightDp)
-                            val totalScale = (targetRackDp / baseRackHeightDp).coerceAtLeast(1.0f)
-                            val elongation = totalScale.coerceIn(1.0f, 1.20f) // Never exceed +20% elongation
-                            val zoom = (totalScale / elongation).coerceIn(1.0f, 1.25f)
-                            elongation to zoom
-                        }
+                        val targetRackDp = (maxHeight.value - nonRackPrimaryFrameDp).coerceAtLeast(baseRackHeightDp)
+                        val totalScale = (targetRackDp / baseRackHeightDp).coerceAtLeast(1.0f)
+                        // Strict +20% maximum fader elongation (1.0f .. 1.20f) to preserve authentic hardware proportions,
+                        // while flexing down toward 1.0f whenever needed so the Arpeggiator section fits completely on screen:
+                        val elongation = totalScale.coerceIn(1.0f, 1.20f)
+                        val zoom = (totalScale / elongation).coerceIn(1.0f, 1.35f)
+                        elongation to zoom
                     }
 
                     val rackZoomedDensity = remember(previewMatchedDensity, rackZoomFactor) {
