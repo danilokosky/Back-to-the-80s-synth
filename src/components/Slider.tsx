@@ -280,6 +280,7 @@ export const Slider: React.FC<SliderProps> = ({
         style={{
           touchAction: 'none',
           height: 'calc(112px * var(--fader-elongation, 1))',
+          transition: 'height 320ms cubic-bezier(0.22, 1, 0.36, 1)',
         }}
         className="relative flex items-center justify-center w-8.5 sm:w-9.5 px-0.5 py-2 cursor-pointer select-none active:brightness-110 touch-none"
       >

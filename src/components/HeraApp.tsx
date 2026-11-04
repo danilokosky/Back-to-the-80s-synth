@@ -204,54 +204,101 @@ export const HeraApp: React.FC = () => {
     return () => window.removeEventListener('resize', updateSize);
   }, []);
 
-  // Soft Magnetic Edge Snap between Area of Interest 1 (Top: Header + Faders + Voicing)
-  // and Area of Interest 2 (Bottom: Voicing + Arpeggiator + Keyboard)
+  // Delicate, Silky Soft Magnetic Edge Snap between Area of Interest 1 (Top: Header + Faders + Voicing)
+  // and Area of Interest 2 (Bottom: Voicing + Arpeggiator + Keyboard) using a custom interruptible rAF damper
+  const isDrawerAnimatingRef = useRef<boolean>(false);
+  useEffect(() => {
+    isDrawerAnimatingRef.current = true;
+    const t = window.setTimeout(() => {
+      isDrawerAnimatingRef.current = false;
+    }, 360);
+    return () => window.clearTimeout(t);
+  }, [isArpSectionOpen, isKeyboardOpen]);
+
   useEffect(() => {
     let snapTimer: number | null = null;
-    let releaseSnapFlagTimer: number | null = null;
+    let rafId: number | null = null;
 
-    const onPointerDown = () => {
-      isPointerDownRef.current = true;
+    const cancelMagneticGlide = () => {
       if (snapTimer !== null) {
         window.clearTimeout(snapTimer);
         snapTimer = null;
       }
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      isAutoSnappingRef.current = false;
+    };
+
+    const startSilkyMagneticGlide = (targetY: number) => {
+      cancelMagneticGlide();
+      const startY = window.scrollY;
+      const delta = targetY - startY;
+      if (Math.abs(delta) < 1.5) return;
+
+      isAutoSnappingRef.current = true;
+      const durationMs = 420;
+      const startTime = performance.now();
+
+      // Delicate ease-out quintic/cubic damper curve
+      const easeOutSilky = (t: number) => 1 - Math.pow(1 - t, 3.6);
+
+      const step = (now: number) => {
+        if (isPointerDownRef.current) {
+          cancelMagneticGlide();
+          return;
+        }
+        const elapsed = now - startTime;
+        const progress = Math.min(1, Math.max(0, elapsed / durationMs));
+        const eased = easeOutSilky(progress);
+        window.scrollTo(0, Math.round(startY + delta * eased));
+        if (progress < 1) {
+          rafId = window.requestAnimationFrame(step);
+        } else {
+          rafId = null;
+          isAutoSnappingRef.current = false;
+        }
+      };
+
+      rafId = window.requestAnimationFrame(step);
+    };
+
+    const onPointerDown = () => {
+      isPointerDownRef.current = true;
+      cancelMagneticGlide();
     };
 
     const triggerEdgeMagnetCheck = () => {
       if (snapTimer !== null) window.clearTimeout(snapTimer);
       snapTimer = window.setTimeout(() => {
-        if (isPointerDownRef.current || isAutoSnappingRef.current) return;
+        if (
+          isPointerDownRef.current ||
+          isAutoSnappingRef.current ||
+          isDrawerAnimatingRef.current
+        ) {
+          return;
+        }
         const scrollY = window.scrollY;
         const vh = window.innerHeight;
         const docH = document.documentElement.scrollHeight;
         const maxScroll = Math.max(0, docH - vh);
         if (maxScroll <= 6) return;
 
-        const magnetZone = Math.min(110, Math.max(24, maxScroll * 0.28));
+        const magnetZone = Math.min(115, Math.max(24, maxScroll * 0.28));
 
-        // Near Top Edge -> Magnetize softly to Area of Interest 1 (0px)
+        // Near Top Edge -> Magnetize delicately to Area of Interest 1 (0px)
         if (scrollY > 2 && scrollY <= magnetZone) {
-          isAutoSnappingRef.current = true;
-          window.scrollTo({ top: 0, behavior: 'smooth' });
-          if (releaseSnapFlagTimer !== null) window.clearTimeout(releaseSnapFlagTimer);
-          releaseSnapFlagTimer = window.setTimeout(() => {
-            isAutoSnappingRef.current = false;
-          }, 420);
+          startSilkyMagneticGlide(0);
           return;
         }
 
-        // Near Bottom Edge -> Magnetize softly to Area of Interest 2 (Voicing at top + Arp/Keyboard at bottom)
+        // Near Bottom Edge -> Magnetize delicately to Area of Interest 2 (Voicing at top + Arp/Keyboard at bottom)
         const distFromBottom = maxScroll - scrollY;
         if (distFromBottom > 2 && distFromBottom <= magnetZone) {
-          isAutoSnappingRef.current = true;
-          window.scrollTo({ top: maxScroll, behavior: 'smooth' });
-          if (releaseSnapFlagTimer !== null) window.clearTimeout(releaseSnapFlagTimer);
-          releaseSnapFlagTimer = window.setTimeout(() => {
-            isAutoSnappingRef.current = false;
-          }, 420);
+          startSilkyMagneticGlide(maxScroll);
         }
-      }, 140);
+      }, 95);
     };
 
     const onPointerUp = () => {
@@ -259,8 +306,15 @@ export const HeraApp: React.FC = () => {
       triggerEdgeMagnetCheck();
     };
 
+    const onWheel = () => {
+      if (isAutoSnappingRef.current) {
+        cancelMagneticGlide();
+      }
+      triggerEdgeMagnetCheck();
+    };
+
     const onScroll = () => {
-      if (!isPointerDownRef.current && !isAutoSnappingRef.current) {
+      if (!isPointerDownRef.current && !isAutoSnappingRef.current && !isDrawerAnimatingRef.current) {
         triggerEdgeMagnetCheck();
       }
     };
@@ -269,15 +323,16 @@ export const HeraApp: React.FC = () => {
     window.addEventListener('pointerup', onPointerUp, { passive: true });
     window.addEventListener('pointercancel', onPointerUp, { passive: true });
     window.addEventListener('touchend', onPointerUp, { passive: true });
+    window.addEventListener('wheel', onWheel, { passive: true });
     window.addEventListener('scroll', onScroll, { passive: true });
 
     return () => {
-      if (snapTimer !== null) window.clearTimeout(snapTimer);
-      if (releaseSnapFlagTimer !== null) window.clearTimeout(releaseSnapFlagTimer);
+      cancelMagneticGlide();
       window.removeEventListener('pointerdown', onPointerDown);
       window.removeEventListener('pointerup', onPointerUp);
       window.removeEventListener('pointercancel', onPointerUp);
       window.removeEventListener('touchend', onPointerUp);
+      window.removeEventListener('wheel', onWheel);
       window.removeEventListener('scroll', onScroll);
     };
   }, []);
@@ -289,20 +344,18 @@ export const HeraApp: React.FC = () => {
 
     const headerH = topHeaderRef.current?.offsetHeight || 54;
     const voicingBarH = presetBarRef.current?.offsetHeight || 56;
+    const arpAllowance = isArpSectionOpen && !isKeyboardOpen ? 36 : 0;
     // Area of Interest 1: Top Header Bar + Faders/Filters/FX Section + Voicing/Preset Bar
-    // Completely independent of whether ARP or Keyboard drawers are open below!
-    // Only the Faders section flexes vertically up to +20% (1.20x); all other elements keep static 1.0x proportion.
-    const nonRackArea1H = headerH + voicingBarH + 16;
+    // Faders smoothly adapt between 1.00x and 1.20x (max +20%); all other elements keep 1.0x proportion.
+    const nonRackArea1H = headerH + voicingBarH + arpAllowance + 16;
     const baseRackH = 268;
 
     const availableForRack = Math.max(baseRackH, vh - nonRackArea1H);
     const rawElongation = availableForRack / baseRackH;
     const elongation = Math.min(1.2, Math.max(1.0, rawElongation)); // Strictly capped at max +20% (1.20x)
 
-    // In widescreen viewports (or whenever Area 1 within +20% fader elongation fills the viewport),
-    // Area 1 locks to 100% of the initial screen height so Voicing is never cut off and lower drawers never peek.
-    const maxArea1H = nonRackArea1H + baseRackH * 1.2 + 24;
-    const widescreenFit = aspect >= 1.65 && vh <= maxArea1H;
+    const maxArea1H = headerH + voicingBarH + 16 + baseRackH * 1.2 + 24;
+    const widescreenFit = aspect >= 1.65 && vh <= maxArea1H && (!isArpSectionOpen || isKeyboardOpen);
 
     return {
       faderElongation: elongation,
@@ -2774,11 +2827,23 @@ export const HeraApp: React.FC = () => {
           </div>
           </div>
 
-          {/* Area of Interest 2 Collapsible Modules: Arpeggiator + Virtual Piano Keyboard */}
-          {(isArpSectionOpen || isKeyboardOpen) && (
-            <div ref={lowerDrawerRef} className="bg-zinc-950 flex flex-col rounded-b-md">
-              {isArpSectionOpen && (
-                <div className={`p-1.5 sm:p-2 bg-zinc-950 ${isKeyboardOpen ? 'border-b border-zinc-800' : ''}`}>
+          {/* Area of Interest 2 Collapsible Drawers: Arpeggiator + Virtual Piano Keyboard (Always mounted for 0-CPU remount & smooth sliding drawer transitions) */}
+          <div ref={lowerDrawerRef} className="bg-zinc-950 flex flex-col rounded-b-md">
+            {/* Arpeggiator Sliding Drawer */}
+            <div
+              aria-hidden={!isArpSectionOpen}
+              className={`grid transition-[grid-template-rows,opacity,transform] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+                isArpSectionOpen
+                  ? 'grid-rows-[1fr] opacity-100 translate-y-0'
+                  : 'grid-rows-[0fr] opacity-0 -translate-y-2 pointer-events-none'
+              }`}
+            >
+              <div className="overflow-hidden min-h-0">
+                <div
+                  className={`p-1.5 sm:p-2 bg-zinc-950 ${
+                    isArpSectionOpen && isKeyboardOpen ? 'border-b border-zinc-800' : ''
+                  }`}
+                >
                   <Arpeggiator
                     isOpen={isArpSectionOpen}
                     onArpEnabledChange={setIsArpEnabled}
@@ -2794,27 +2859,36 @@ export const HeraApp: React.FC = () => {
                     }}
                   />
                 </div>
-              )}
-
-              {isKeyboardOpen && (
-                <div ref={keyboardSectionRef} className="bg-zinc-950">
-                  <PianoKeyboard
-                    isMidiLearnActive={isMidiLearnActive}
-                    selectedLearnAction={selectedLearnAction}
-                    mappedCCPitch={getMappedActionCC('pitchWheel')}
-                    mappedCCMod={getMappedActionCC('modWheel')}
-                    channelLabelPitch={getChannelLabelForAction('pitchWheel')}
-                    channelLabelMod={getChannelLabelForAction('modWheel')}
-                    onSelectActionForLearn={handleSelectActionForLearn}
-                    onUnmapAction={handleUnmapAction}
-                    onRegisterWheelUpdater={(updater) => {
-                      wheelUpdaterRef.current = updater;
-                    }}
-                  />
-                </div>
-              )}
+              </div>
             </div>
-          )}
+
+            {/* Virtual Piano Keyboard Sliding Drawer */}
+            <div
+              ref={keyboardSectionRef}
+              aria-hidden={!isKeyboardOpen}
+              className={`grid transition-[grid-template-rows,opacity,transform] duration-[340ms] ease-[cubic-bezier(0.22,1,0.36,1)] bg-zinc-950 ${
+                isKeyboardOpen
+                  ? 'grid-rows-[1fr] opacity-100 translate-y-0'
+                  : 'grid-rows-[0fr] opacity-0 -translate-y-2 pointer-events-none'
+              }`}
+            >
+              <div className="overflow-hidden min-h-0">
+                <PianoKeyboard
+                  isMidiLearnActive={isMidiLearnActive}
+                  selectedLearnAction={selectedLearnAction}
+                  mappedCCPitch={getMappedActionCC('pitchWheel')}
+                  mappedCCMod={getMappedActionCC('modWheel')}
+                  channelLabelPitch={getChannelLabelForAction('pitchWheel')}
+                  channelLabelMod={getChannelLabelForAction('modWheel')}
+                  onSelectActionForLearn={handleSelectActionForLearn}
+                  onUnmapAction={handleUnmapAction}
+                  onRegisterWheelUpdater={(updater) => {
+                    wheelUpdaterRef.current = updater;
+                  }}
+                />
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 

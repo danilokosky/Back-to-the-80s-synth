@@ -28,8 +28,17 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
@@ -46,9 +55,12 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -83,8 +95,12 @@ private val JunoGreenReady = Color(0xFF10B981)
 private val JunoWoodLight = Color(0xFF6B321C)
 private val JunoWoodDark = Color(0xFF3A180B)
 
-// Proportional vertical elongation factor for the Faders section (strictly capped at 1.0f .. 1.20f = max +20%)
-private val LocalFaderElongation = compositionLocalOf { 1.0f }
+// Smooth Cubic-Bezier curve for organic drawer unfolding, fader adaptation, and magnetic edge snapping
+private val SilkySmoothEasing = CubicBezierEasing(0.22f, 1.0f, 0.36f, 1.0f)
+
+// Proportional vertical elongation State for the Faders section (strictly capped at 1.0f .. 1.20f = max +20%).
+// Passed as State<Float> and read ONLY inside Modifier.layout so animating faders causes ZERO recompositions!
+private val LocalFaderElongationState = compositionLocalOf<State<Float>> { mutableFloatStateOf(1.0f) }
 
 class MainActivity : ComponentActivity() {
 
@@ -504,46 +520,71 @@ fun HeraJunoNativeScreen(
                     }
 
                     // Fixed static heights inside Area of Interest 1:
-                    // Header + TopRainbow (3dp) + Horizontal Scrollbar (8dp) + BottomRainbow (3dp) + VoicingBar
-                    val staticNonRackArea1Dp = headerHeightDp + 3f + 8f + 3f + voicingHeightDp
+                    // Header + TopRainbow (3dp) + Horizontal Scrollbar (8dp) + BottomRainbow (3dp) + VoicingBar + 2dp safety buffer
+                    val staticNonRackArea1Dp = headerHeightDp + 3f + 8f + 3f + voicingHeightDp + 2f
                     val baseRackHeightDp = 232f
 
-                    // Faders Section elongation (strictly capped at 1.00f .. 1.20f = max +20% of real proportion).
-                    // Completely independent of whether ARP, PRESETS, or TECLADO are expanded or collapsed!
-                    // All other elements remain at 1.0f static proportion (no rackZoomFactor distortion).
-                    val faderElongation = remember(maxHeight.value, staticNonRackArea1Dp) {
-                        val idealRackDp = (maxHeight.value - staticNonRackArea1Dp).coerceAtLeast(baseRackHeightDp)
+                    // Dynamic target Faders Section elongation (strictly capped at 1.00f .. 1.20f = max +20% of real proportion).
+                    // Smoothly adapts when inline drawers (ARP / PRESETS / PERFIL) unfold so the faders gently breathe and
+                    // fit elements on screen, while keeping Area of Interest 1 (Header + Faders + Voicing) at 100% fit!
+                    val inlineDrawerAllowanceDp =
+                        (if (arpExpanded && !showKeyboard) (arpHeightDp + 8f) * 0.65f else 0f) +
+                        (if (showPresetsDialog && !showKeyboard) 56f else 0f) +
+                        (if (showProfileDialog) 28f else 0f)
+                    val targetFaderElongation = remember(maxHeight.value, staticNonRackArea1Dp, inlineDrawerAllowanceDp) {
+                        val idealRackDp = (maxHeight.value - staticNonRackArea1Dp - inlineDrawerAllowanceDp).coerceAtLeast(baseRackHeightDp)
                         (idealRackDp / baseRackHeightDp).coerceIn(1.00f, 1.20f)
                     }
+                    // Smoothly animated fader elongation state — read only in Modifier.layout for 0-recomposition 120fps performance
+                    val faderElongationState = animateFloatAsState(
+                        targetValue = targetFaderElongation,
+                        animationSpec = tween(durationMillis = 320, easing = SilkySmoothEasing),
+                        label = "faderElongation"
+                    )
                     val rackZoomedDensity = previewMatchedDensity
 
                     // Size the Keyboard in Area of Interest 2 so that when scrolled to the bottom (maxScroll),
                     // VoicingPresetBar sits right at the top of the screen, followed by Arpeggiator and Keyboard to the bottom!
-                    val keyboardSectionHeight = remember(maxHeight.value, voicingHeightDp, arpHeightDp) {
+                    val keyboardSectionHeight = remember(maxHeight.value, voicingHeightDp, arpHeightDp, arpExpanded) {
                         val availableBelowVoicingDp = maxHeight.value - voicingHeightDp - arpHeightDp - (if (arpExpanded) 12f else 8f)
                         availableBelowVoicingDp.coerceIn(182f, 276f).dp
                     }
 
-                    // Soft Magnetic Edge Snap:
+                    // Track when any drawer is actively unfolding/folding so magnetic scroll doesn't fight drawer animations
+                    var isDrawerTransitioning by remember { mutableStateOf(false) }
+                    LaunchedEffect(showKeyboard, arpExpanded, showPresetsDialog, showProfileDialog) {
+                        isDrawerTransitioning = true
+                        delay(360L)
+                        isDrawerTransitioning = false
+                    }
+
+                    // Delicate, Silky Soft Magnetic Edge Snap:
                     // User has full manual control while dragging/scrolling, and when releasing near the top edge (Area 1)
-                    // or near the bottom edge (Area 2), the view gently magnetizes into place.
+                    // or near the bottom edge (Area 2), the view gently glides into place with a smooth cubic-bezier damper.
                     val isScrollInProgress = mainVerticalScroll.isScrollInProgress
-                    LaunchedEffect(isScrollInProgress, mainVerticalScroll.maxValue) {
+                    LaunchedEffect(isScrollInProgress, isDrawerTransitioning) {
                         val maxScroll = mainVerticalScroll.maxValue
-                        if (!isScrollInProgress && maxScroll > 0) {
-                            delay(75L)
-                            if (!mainVerticalScroll.isScrollInProgress) {
+                        if (!isScrollInProgress && !isDrawerTransitioning && maxScroll > 6) {
+                            delay(24L)
+                            if (!mainVerticalScroll.isScrollInProgress && !isDrawerTransitioning) {
                                 val current = mainVerticalScroll.value
-                                val snapThresholdPx = (maxScroll * 0.30f).roundToInt().coerceIn(20, 175)
-                                if (current in 1..snapThresholdPx) {
+                                val latestMax = mainVerticalScroll.maxValue
+                                val snapThresholdPx = (latestMax * 0.28f).roundToInt().coerceIn(22, 165)
+                                if (current in 2..snapThresholdPx) {
                                     mainVerticalScroll.animateScrollTo(
                                         value = 0,
-                                        animationSpec = tween(durationMillis = 220)
+                                        animationSpec = tween(
+                                            durationMillis = 420,
+                                            easing = SilkySmoothEasing
+                                        )
                                     )
-                                } else if (current in (maxScroll - snapThresholdPx) until maxScroll) {
+                                } else if (current in (latestMax - snapThresholdPx) until (latestMax - 1)) {
                                     mainVerticalScroll.animateScrollTo(
-                                        value = maxScroll,
-                                        animationSpec = tween(durationMillis = 220)
+                                        value = latestMax,
+                                        animationSpec = tween(
+                                            durationMillis = 420,
+                                            easing = SilkySmoothEasing
+                                        )
                                     )
                                 }
                             }
@@ -627,21 +668,37 @@ fun HeraJunoNativeScreen(
                         }
                     )
 
-                        // 1A. INLINE EXPANDABLE MIDI PROFILE DRAWER (Expands downwards instead of opening a pop-up!)
-                        if (showProfileDialog) {
-                            MidiProfileInlineDrawer(
-                                midiManager = midiManager,
-                                uiRevision = rev,
-                                onNotifyUiChanged = onNotifyUiChanged,
-                                onCollapse = { showProfileDialog = false }
-                            )
+                        // 1A. INLINE EXPANDABLE MIDI PROFILE DRAWER (Unfolds smoothly downward from TopHeaderBar!)
+                        AnimatedVisibility(
+                            visible = showProfileDialog,
+                            enter = expandVertically(
+                                expandFrom = Alignment.Top,
+                                animationSpec = tween(durationMillis = 260, easing = SilkySmoothEasing)
+                            ) + slideInVertically(
+                                animationSpec = tween(durationMillis = 260, easing = SilkySmoothEasing)
+                            ) { -it / 4 } + fadeIn(tween(durationMillis = 200)),
+                            exit = shrinkVertically(
+                                shrinkTowards = Alignment.Top,
+                                animationSpec = tween(durationMillis = 220, easing = SilkySmoothEasing)
+                            ) + slideOutVertically(
+                                animationSpec = tween(durationMillis = 220, easing = SilkySmoothEasing)
+                            ) { -it / 4 } + fadeOut(tween(durationMillis = 160))
+                        ) {
+                            Box(modifier = Modifier.graphicsLayer { clip = true }) {
+                                MidiProfileInlineDrawer(
+                                    midiManager = midiManager,
+                                    uiRevision = rev,
+                                    onNotifyUiChanged = onNotifyUiChanged,
+                                    onCollapse = { showProfileDialog = false }
+                                )
+                            }
                         }
                     }
 
                     // 1B. Signature Roland Juno-60 5-Color Metallic Accent Stripe (Top Separator)
                     JunoRainbowSeparator()
 
-                    // 2. MAIN HORIZONTAL SCROLLABLE SYNTHESIZER RACK (Up to +20% proportional fader elongation)
+                    // 2. MAIN HORIZONTAL SCROLLABLE SYNTHESIZER RACK (Up to +20% smooth fader elongation, GPU cached)
                     val rackScrollState = rememberScrollState()
                     val rackSections = remember {
                         listOf(
@@ -658,15 +715,27 @@ fun HeraJunoNativeScreen(
                     }
                     CompositionLocalProvider(
                         LocalDensity provides rackZoomedDensity,
-                        LocalFaderElongation provides faderElongation
+                        LocalFaderElongationState provides faderElongationState
                     ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height((232f * faderElongation).dp)
+                                .layout { measurable, constraints ->
+                                    val elong = faderElongationState.value.coerceIn(1.0f, 1.20f)
+                                    val targetH = (232f * elong).dp.roundToPx()
+                                    val padV = (4f * elong).dp.roundToPx()
+                                    val innerH = (targetH - padV * 2).coerceAtLeast(0)
+                                    val placeable = measurable.measure(
+                                        constraints.copy(minHeight = innerH, maxHeight = innerH)
+                                    )
+                                    layout(placeable.width, targetH) {
+                                        placeable.placeRelative(0, padV)
+                                    }
+                                }
+                                .graphicsLayer { clip = true }
                                 .background(Color(0xFF11131A))
                                 .horizontalScroll(rackScrollState)
-                                .padding(horizontal = 8.dp, vertical = (4f * faderElongation).dp),
+                                .padding(horizontal = 8.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             for (sec in rackSections) {
@@ -788,17 +857,34 @@ fun HeraJunoNativeScreen(
                         )
                     }
 
-                    // 3. AREA OF INTEREST 2 (Rendered ONLY when at least one drawer is active; zero leftover border when collapsed!)
-                    if (showPresetsDialog || arpExpanded || showKeyboard) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(Color(0xFF090B10))
-                                .border(1.dp, Color(0xFF1A202E))
-                                .padding(horizontal = 6.dp, vertical = 4.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                    // 3. AREA OF INTEREST 2 DRAWERS (Each drawer unfolds smoothly downward with GPU layer caching!)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF090B10))
+                    ) {
+                        // 3A. PRESETS / TIMBRES DRAWER (Unfolds smoothly downward from VoicingPresetBar)
+                        AnimatedVisibility(
+                            visible = showPresetsDialog,
+                            enter = expandVertically(
+                                expandFrom = Alignment.Top,
+                                animationSpec = tween(durationMillis = 280, easing = SilkySmoothEasing)
+                            ) + slideInVertically(
+                                animationSpec = tween(durationMillis = 280, easing = SilkySmoothEasing)
+                            ) { -it / 5 } + fadeIn(tween(durationMillis = 220)),
+                            exit = shrinkVertically(
+                                shrinkTowards = Alignment.Top,
+                                animationSpec = tween(durationMillis = 240, easing = SilkySmoothEasing)
+                            ) + slideOutVertically(
+                                animationSpec = tween(durationMillis = 240, easing = SilkySmoothEasing)
+                            ) { -it / 5 } + fadeOut(tween(durationMillis = 180))
                         ) {
-                            if (showPresetsDialog) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .graphicsLayer { clip = true }
+                                    .padding(horizontal = 6.dp, vertical = 3.dp)
+                            ) {
                                 VoicingTimbresInlineBrowser(
                                     presetIndex = currentPresetIndex,
                                     allPresets = allPresets,
@@ -814,49 +900,86 @@ fun HeraJunoNativeScreen(
                                     }
                                 )
                             }
+                        }
 
-                            // 3B. FULL ARPEGGIATOR SECTION
-                            if (arpExpanded) {
-                                Box(
+                        // 3B. FULL ARPEGGIATOR DRAWER (Unfolds smoothly downward from VoicingPresetBar)
+                        AnimatedVisibility(
+                            visible = arpExpanded,
+                            enter = expandVertically(
+                                expandFrom = Alignment.Top,
+                                animationSpec = tween(durationMillis = 290, easing = SilkySmoothEasing)
+                            ) + slideInVertically(
+                                animationSpec = tween(durationMillis = 290, easing = SilkySmoothEasing)
+                            ) { -it / 5 } + fadeIn(tween(durationMillis = 220)),
+                            exit = shrinkVertically(
+                                shrinkTowards = Alignment.Top,
+                                animationSpec = tween(durationMillis = 250, easing = SilkySmoothEasing)
+                            ) + slideOutVertically(
+                                animationSpec = tween(durationMillis = 250, easing = SilkySmoothEasing)
+                            ) { -it / 5 } + fadeOut(tween(durationMillis = 180))
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .graphicsLayer { clip = true }
+                                    .onSizeChanged { measuredArpPx = it.height }
+                                    .padding(horizontal = 6.dp, vertical = 3.dp)
+                            ) {
+                                ArpeggiatorKeyboardBar(
+                                    arpEnabled = arpEnabled,
+                                    onToggleArp = {
+                                        arpEnabled = !arpEnabled
+                                        if (!arpEnabled && !holdSustain) onPanicAllNotesOff()
+                                    },
+                                    arpMode = arpMode,
+                                    onSelectArpMode = { arpMode = it },
+                                    arpRange = arpRange,
+                                    onSelectArpRange = { arpRange = it },
+                                    arpRateDiv = arpRateDiv,
+                                    onSelectArpRateDiv = { arpRateDiv = it },
+                                    arpBpm = arpBpm,
+                                    onArpBpmChange = { arpBpm = it },
+                                    holdSustain = holdSustain,
+                                    onToggleHold = {
+                                        val next = !holdSustain
+                                        holdSustain = next
+                                        if (!next) onPanicAllNotesOff()
+                                    }
+                                )
+                            }
+                        }
+
+                        // 3C. KEYBOARD DRAWER (Slides & unfolds smoothly downward like a hardware synth keyboard drawer!)
+                        AnimatedVisibility(
+                            visible = showKeyboard,
+                            enter = expandVertically(
+                                expandFrom = Alignment.Top,
+                                animationSpec = tween(durationMillis = 340, easing = SilkySmoothEasing)
+                            ) + slideInVertically(
+                                animationSpec = tween(durationMillis = 340, easing = SilkySmoothEasing)
+                            ) { -it / 5 } + fadeIn(tween(durationMillis = 240)),
+                            exit = shrinkVertically(
+                                shrinkTowards = Alignment.Top,
+                                animationSpec = tween(durationMillis = 280, easing = SilkySmoothEasing)
+                            ) + slideOutVertically(
+                                animationSpec = tween(durationMillis = 280, easing = SilkySmoothEasing)
+                            ) { -it / 5 } + fadeOut(tween(durationMillis = 200))
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .graphicsLayer { clip = true }
+                                    .padding(horizontal = 6.dp, vertical = 3.dp)
+                            ) {
+                                Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .onSizeChanged { measuredArpPx = it.height }
+                                        .height(keyboardSectionHeight)
+                                        .background(Color(0xFF0A0C10), RoundedCornerShape(5.dp))
+                                        .border(1.dp, Color(0xFF1F2432), RoundedCornerShape(5.dp))
+                                        .padding(horizontal = 6.dp, vertical = 5.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
-                                    ArpeggiatorKeyboardBar(
-                                        arpEnabled = arpEnabled,
-                                        onToggleArp = {
-                                            arpEnabled = !arpEnabled
-                                            if (!arpEnabled && !holdSustain) onPanicAllNotesOff()
-                                        },
-                                        arpMode = arpMode,
-                                        onSelectArpMode = { arpMode = it },
-                                        arpRange = arpRange,
-                                        onSelectArpRange = { arpRange = it },
-                                        arpRateDiv = arpRateDiv,
-                                        onSelectArpRateDiv = { arpRateDiv = it },
-                                        arpBpm = arpBpm,
-                                        onArpBpmChange = { arpBpm = it },
-                                        holdSustain = holdSustain,
-                                        onToggleHold = {
-                                            val next = !holdSustain
-                                            holdSustain = next
-                                            if (!next) onPanicAllNotesOff()
-                                        }
-                                    )
-                                }
-                            }
-
-                            // 3C. KEYBOARD CONTROLS + BENDER/MOD WHEELS + MULTI-TOUCH POLYPHONIC KEYBOARD
-                            if (showKeyboard) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(keyboardSectionHeight)
-                            .background(Color(0xFF0A0C10), RoundedCornerShape(5.dp))
-                            .border(1.dp, Color(0xFF1F2432), RoundedCornerShape(5.dp))
-                            .padding(horizontal = 6.dp, vertical = 5.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
                         // Top Controls Bar (Octave Transpose, HOLD, Shortcuts Toggle, and 61-Key description)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1067,10 +1190,11 @@ fun HeraJunoNativeScreen(
                                 modifier = Modifier
                                     .weight(1f)
                                     .fillMaxHeight()
+                                    .graphicsLayer { clip = true }
                             )
                         }
                     }
-                }
+                            }
                         }
                     }
                     }
@@ -1093,7 +1217,7 @@ fun HeraJunoNativeScreen(
                         ) {
                             CompositionLocalProvider(
                                 LocalDensity provides rackZoomedDensity,
-                                LocalFaderElongation provides faderElongation
+                                LocalFaderElongationState provides faderElongationState
                             ) {
                                 Box(
                                     contentAlignment = Alignment.Center,
@@ -4014,142 +4138,177 @@ private fun SynthModuleCard(
     bottomBar: (@Composable () -> Unit)? = null,
     content: @Composable () -> Unit
 ) {
-    val elongation = LocalFaderElongation.current.coerceIn(1.0f, 1.20f)
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
+    val elongationState = LocalFaderElongationState.current
+    // Single-pass custom Layout: measures content() ONCE first to obtain cardWidth, then measures
+    // header and footer bars at fixed width cardWidth. Completely eliminates IntrinsicSize.Max double-measurement
+    // and reads elongationState.value only during the layout phase (ZERO recompositions during fader animation!).
+    Layout(
         modifier = Modifier
-            .width(IntrinsicSize.Max)
-            .height((224f * elongation).dp)
             .clip(RoundedCornerShape(5.dp))
             .background(Color(0xFF0B0D13))
-            .border(1.dp, Color(0xFF1F2533), RoundedCornerShape(5.dp))
-    ) {
-        // 1. Thin Colored Top Line spanning 100% of the section width
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(2.dp)
-                .background(accentColor)
-        )
-
-        // 2. Full-Width Tinted Header Bar right at the top with strictly centered title
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(16.dp)
-                .background(accentColor.copy(alpha = 0.18f))
-                .padding(horizontal = 4.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Row(
-                modifier = Modifier.align(Alignment.Center),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(3.dp)
+            .border(1.dp, Color(0xFF1F2533), RoundedCornerShape(5.dp)),
+        content = {
+            // [0] Main Controls Area (measured first to determine card width in a single pass)
+            Box(
+                modifier = Modifier.padding(horizontal = 14.dp),
+                contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = title,
-                    color = accentColor,
-                    fontSize = 6.8.sp,
-                    lineHeight = 7.sp,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Black,
-                    letterSpacing = 0.5.sp,
-                    textAlign = TextAlign.Center,
-                    maxLines = 1
+                content()
+            }
+
+            // [1] Top Header Block (Top 2dp line + 16dp title bar + 0.8dp hairline)
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp)
+                        .background(accentColor)
                 )
-                if (titleBadge != null) {
-                    Box(
-                        modifier = Modifier
-                            .background(Color(0xFF2E1065), RoundedCornerShape(2.dp))
-                            .border(0.8.dp, Color(0xFF6D28D9), RoundedCornerShape(2.dp))
-                            .padding(horizontal = 2.dp, vertical = 0.dp)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(16.dp)
+                        .background(accentColor.copy(alpha = 0.18f))
+                        .padding(horizontal = 4.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(
+                        modifier = Modifier.align(Alignment.Center),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
                         Text(
-                            text = titleBadge,
-                            color = Color(0xFFDDD6FE),
+                            text = title,
+                            color = accentColor,
+                            fontSize = 6.8.sp,
+                            lineHeight = 7.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = 0.5.sp,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1
+                        )
+                        if (titleBadge != null) {
+                            Box(
+                                modifier = Modifier
+                                    .background(Color(0xFF2E1065), RoundedCornerShape(2.dp))
+                                    .border(0.8.dp, Color(0xFF6D28D9), RoundedCornerShape(2.dp))
+                                    .padding(horizontal = 2.dp, vertical = 0.dp)
+                            ) {
+                                Text(
+                                    text = titleBadge,
+                                    color = Color(0xFFDDD6FE),
+                                    fontSize = 5.5.sp,
+                                    lineHeight = 6.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            }
+                        }
+                    }
+
+                    if (headerRight != null) {
+                        Box(
+                            modifier = Modifier.align(Alignment.CenterEnd),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            headerRight()
+                        }
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(0.8.dp)
+                        .background(accentColor.copy(alpha = 0.35f))
+                )
+            }
+
+            // [2] Bottom Footer Block (0.8dp hairline + footer/bottomBar + 2dp bottom accent bar)
+            Column(modifier = Modifier.fillMaxWidth()) {
+                if (bottomBar != null) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(0.8.dp)
+                            .background(Color(0xFF181D29))
+                    )
+                    bottomBar()
+                } else if (footer != null) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(0.8.dp)
+                            .background(Color(0xFF181D29))
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(12.dp)
+                            .background(Color(0xFF080A0F))
+                            .padding(horizontal = 3.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = footer,
+                            color = Color(0xFF9CA3AF),
                             fontSize = 5.5.sp,
                             lineHeight = 6.sp,
                             fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.ExtraBold
+                            fontWeight = FontWeight.SemiBold,
+                            letterSpacing = 0.4.sp,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1
                         )
                     }
                 }
-            }
-
-            if (headerRight != null) {
                 Box(
-                    modifier = Modifier.align(Alignment.CenterEnd),
-                    contentAlignment = Alignment.Center
-                ) {
-                    headerRight()
-                }
-            }
-        }
-
-        // Crisp hairline divider under the full-width title bar
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(0.8.dp)
-                .background(accentColor.copy(alpha = 0.35f))
-        )
-
-        // 3. Main Controls Area (Proportional vertical breathing room separating faders from header and footer)
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = (10f * elongation).dp),
-            contentAlignment = Alignment.Center
-        ) {
-            content()
-        }
-
-        // 4. Ultra-Slim Full-Width Centered Footer Bar + Bottom Colored Bar
-        if (bottomBar != null) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(0.8.dp)
-                    .background(Color(0xFF181D29))
-            )
-            bottomBar()
-        } else if (footer != null) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(0.8.dp)
-                    .background(Color(0xFF181D29))
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(12.dp)
-                    .background(Color(0xFF080A0F))
-                    .padding(horizontal = 3.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = footer,
-                    color = Color(0xFF9CA3AF),
-                    fontSize = 5.5.sp,
-                    lineHeight = 6.sp,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.SemiBold,
-                    letterSpacing = 0.4.sp,
-                    textAlign = TextAlign.Center,
-                    maxLines = 1
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp)
+                        .background(accentColor)
                 )
             }
         }
+    ) { measurables, _ ->
+        val elong = elongationState.value.coerceIn(1.0f, 1.20f)
+        val totalH = (224f * elong).dp.roundToPx()
+        val headerEstH = 19.dp.roundToPx()
+        val footerEstH = 15.dp.roundToPx()
+        val padV = (10f * elong).dp.roundToPx()
+        val contentMaxH = (totalH - headerEstH - footerEstH - padV * 2).coerceAtLeast(40)
 
-        // 5. Colored Accent Bar repeated across 100% width at the very bottom of the section
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(2.dp)
-                .background(accentColor)
+        // 1. Measure content once with unconstrained width to get natural card width
+        val contentPlaceable = measurables[0].measure(
+            Constraints(
+                minWidth = 0,
+                maxWidth = Constraints.Infinity,
+                minHeight = contentMaxH,
+                maxHeight = contentMaxH
+            )
         )
+        val cardW = contentPlaceable.width.coerceAtLeast(64.dp.roundToPx())
+
+        // 2. Measure header and footer at exact cardW
+        val fixedWConstraints = Constraints(
+            minWidth = cardW,
+            maxWidth = cardW,
+            minHeight = 0,
+            maxHeight = totalH
+        )
+        val headerPlaceable = measurables[1].measure(fixedWConstraints)
+        val footerPlaceable = measurables[2].measure(fixedWConstraints)
+
+        val contentAreaTop = headerPlaceable.height
+        val contentAreaBottom = (totalH - footerPlaceable.height).coerceAtLeast(contentAreaTop)
+        val contentY = contentAreaTop + ((contentAreaBottom - contentAreaTop - contentPlaceable.height) / 2)
+        val contentX = (cardW - contentPlaceable.width) / 2
+
+        layout(cardW, totalH) {
+            headerPlaceable.placeRelative(0, 0)
+            contentPlaceable.placeRelative(contentX, contentY)
+            footerPlaceable.placeRelative(0, totalH - footerPlaceable.height)
+        }
     }
 }
 
@@ -4157,6 +4316,7 @@ private fun SynthModuleCard(
  * Sleek Desktop-Grade Vertical Juno-60 Fader (`42.dp` wide):
  * - Comfortable vertical spacing away from both the header and the footer
  * - Fixed geometry: turning MIDI Learn ON/OFF or selecting a fader NEVER alters fader height or position!
+ * - Reads LocalFaderElongationState ONLY inside Modifier.layout for 0-recomposition 120fps fader adaptation!
  */
 @Composable
 private fun JunoParamFader(
@@ -4175,14 +4335,22 @@ private fun JunoParamFader(
     val mappedCh = remember(revIgnore, param) { midiManager.getMappedChannel(param.key) }
     val isLearnMode = midiManager.isMidiLearnActive
     val isSelectedTarget = isLearnMode && midiManager.learningTargetKey == param.key
-    val elongation = LocalFaderElongation.current.coerceIn(1.0f, 1.20f)
-    val effectiveFaderHeight = (faderHeight.value * elongation).dp
+    val elongationState = LocalFaderElongationState.current
 
     Box(
         contentAlignment = Alignment.TopCenter,
         modifier = Modifier
             .width(42.dp)
-            .height(effectiveFaderHeight)
+            .layout { measurable, constraints ->
+                val elong = elongationState.value.coerceIn(1.0f, 1.20f)
+                val targetH = (faderHeight.value * elong).dp.roundToPx()
+                val placeable = measurable.measure(
+                    constraints.copy(minHeight = targetH, maxHeight = targetH)
+                )
+                layout(placeable.width, targetH) {
+                    placeable.placeRelative(0, 0)
+                }
+            }
     ) {
         // Fixed-dimension Fader Body (Never shifts when MIDI Learn toggles!)
         Column(

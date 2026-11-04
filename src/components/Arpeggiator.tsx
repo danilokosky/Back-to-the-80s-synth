@@ -94,13 +94,10 @@ export const Arpeggiator: React.FC<ArpeggiatorProps> = ({
     });
   }, [onRegisterArpActions]);
 
-  if (!isOpen) {
-    return null;
-  }
-
   return (
     <div
-      className={`bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-xs shadow-inner transition-all animate-in fade-in slide-in-from-top-1 duration-150 ${className}`}
+      aria-hidden={!isOpen}
+      className={`bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-xs shadow-inner ${className}`}
     >
       <div className="flex flex-wrap items-center gap-3 text-[9.5px] font-mono">
         {/* Main Arp ON/OFF Toggle (Mappable via MIDI) */}

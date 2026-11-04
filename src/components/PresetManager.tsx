@@ -680,71 +680,80 @@ export const PresetManager: React.FC<PresetManagerProps> = ({
         </div>
       </div>
 
-      {/* Collapsible Presets Drawer (Search + Category Filter + Preset Grid) */}
-      {isExpanded && (
-        <div className="mt-2.5 pt-2 border-t border-zinc-800 flex flex-col gap-2 animate-in fade-in slide-in-from-top-1 duration-150">
-          {/* Search bar & Category filters */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <div className="relative flex-1 min-w-[130px]">
-              <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-500" />
-              <input
-                type="text"
-                placeholder={isJp8 ? 'Buscar entre os presets do Jupiter-8...' : 'Buscar entre os presets do Juno-60...'}
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full bg-zinc-950 border border-zinc-700/80 rounded pl-6 pr-2 py-1 text-xs font-mono text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-amber-400"
-              />
+      {/* Collapsible Presets Drawer (Smoothly unfolds downward from Voicing Bar with GPU-friendly CSS Grid transition) */}
+      <div
+        aria-hidden={!isExpanded}
+        className={`grid transition-[grid-template-rows,opacity,transform,margin] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+          isExpanded
+            ? 'grid-rows-[1fr] opacity-100 translate-y-0 mt-2.5'
+            : 'grid-rows-[0fr] opacity-0 -translate-y-1.5 mt-0 pointer-events-none'
+        }`}
+      >
+        <div className="overflow-hidden min-h-0">
+          <div className="pt-2 border-t border-zinc-800 flex flex-col gap-2">
+            {/* Search bar & Category filters */}
+            <div className="flex flex-wrap items-center gap-1.5">
+              <div className="relative flex-1 min-w-[130px]">
+                <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-500" />
+                <input
+                  type="text"
+                  placeholder={isJp8 ? 'Buscar entre os presets do Jupiter-8...' : 'Buscar entre os presets do Juno-60...'}
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full bg-zinc-950 border border-zinc-700/80 rounded pl-6 pr-2 py-1 text-xs font-mono text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-amber-400"
+                />
+              </div>
+
+              <div className="flex items-center gap-1 overflow-x-auto text-[9px] font-mono">
+                {['all', 'user', 'strings', 'organ', 'brass', 'bass', 'piano'].map((cat) => (
+                  <button
+                    key={cat}
+                    type="button"
+                    onClick={() => setFilterCategory(cat)}
+                    className={`px-2 py-1 rounded uppercase font-bold cursor-pointer transition-colors ${
+                      filterCategory === cat
+                        ? 'bg-amber-400 text-black shadow-sm font-black'
+                        : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    {cat === 'user' ? `USER (${customPresets.length})` : cat}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            <div className="flex items-center gap-1 overflow-x-auto text-[9px] font-mono">
-              {['all', 'user', 'strings', 'organ', 'brass', 'bass', 'piano'].map((cat) => (
-                <button
-                  key={cat}
-                  type="button"
-                  onClick={() => setFilterCategory(cat)}
-                  className={`px-2 py-1 rounded uppercase font-bold cursor-pointer transition-colors ${
-                    filterCategory === cat
-                      ? 'bg-amber-400 text-black shadow-sm font-black'
-                      : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200'
-                  }`}
-                >
-                  {cat === 'user' ? `USER (${customPresets.length})` : cat}
-                </button>
-              ))}
+            {/* Quick Select Grid */}
+            <div className="max-h-36 overflow-y-auto grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-1 p-1.5 bg-zinc-950 rounded border border-zinc-800 scrollbar-thin">
+              {filteredPresets.map((preset) => {
+                const isCustom = preset.id >= 200;
+                return (
+                  <div
+                    key={preset.id}
+                    onClick={() => loadPreset(preset)}
+                    className={`group flex items-center justify-between px-2 py-1.5 text-left text-[10px] font-mono rounded border transition-colors cursor-pointer ${
+                      selectedId === preset.id
+                        ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-bold shadow-sm'
+                        : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
+                    }`}
+                  >
+                    <span className="truncate">{preset.name}</span>
+                    {isCustom && (
+                      <button
+                        type="button"
+                        onClick={(e) => handleDeleteCustomPreset(e, preset.id)}
+                        className="text-zinc-500 hover:text-red-400 ml-1 flex-shrink-0 cursor-pointer"
+                        title="Excluir preset customizado"
+                      >
+                        <Trash2 size={10} />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
             </div>
-          </div>
-
-          {/* Quick Select Grid */}
-          <div className="max-h-36 overflow-y-auto grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-1 p-1.5 bg-zinc-950 rounded border border-zinc-800 scrollbar-thin">
-            {filteredPresets.map((preset) => {
-              const isCustom = preset.id >= 200;
-              return (
-                <div
-                  key={preset.id}
-                  onClick={() => loadPreset(preset)}
-                  className={`group flex items-center justify-between px-2 py-1.5 text-left text-[10px] font-mono rounded border transition-colors cursor-pointer ${
-                    selectedId === preset.id
-                      ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-bold shadow-sm'
-                      : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
-                  }`}
-                >
-                  <span className="truncate">{preset.name}</span>
-                  {isCustom && (
-                    <button
-                      type="button"
-                      onClick={(e) => handleDeleteCustomPreset(e, preset.id)}
-                      className="text-zinc-500 hover:text-red-400 ml-1 flex-shrink-0 cursor-pointer"
-                      title="Excluir preset customizado"
-                    >
-                      <Trash2 size={10} />
-                    </button>
-                  )}
-                </div>
-              );
-            })}
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 };
