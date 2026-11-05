@@ -34,6 +34,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateIntAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -5155,14 +5156,14 @@ private fun JunoParamFader(
                 }
             }
 
-            Spacer(modifier = Modifier.height(if (isFlattenedFader) 1.5.dp else 3.5.dp))
+            Spacer(modifier = Modifier.height(2.5.dp))
 
             // Compact Low-Profile Digital Readout Box at bottom (0 .. 100) with minimal top/bottom padding and separated from fader & bottom border
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
                     .widthIn(min = 21.dp)
-                    .height(if (isFlattenedFader) 10.dp else 12.dp)
+                    .height(11.dp)
                     .background(Color(0xFF07090D), RoundedCornerShape(2.dp))
                     .border(0.8.dp, Color(0xFF1B2230), RoundedCornerShape(2.dp))
                     .padding(horizontal = 3.dp)
@@ -5170,8 +5171,8 @@ private fun JunoParamFader(
                 Text(
                     text = "${(value * 100f).roundToInt().coerceIn(0, 100)}",
                     color = JunoAmberLed,
-                    fontSize = if (isFlattenedFader) 6.2.sp else 7.sp,
-                    lineHeight = if (isFlattenedFader) 6.2.sp else 7.sp,
+                    fontSize = 6.8.sp,
+                    lineHeight = 6.8.sp,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center,
