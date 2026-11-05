@@ -337,7 +337,30 @@ export const HeraApp: React.FC = () => {
     };
   }, []);
 
-  const { faderElongation, rackZoomFactor, isWidescreenFrame } = (() => {
+  const [isKeyboardFocusMode, setIsKeyboardFocusMode] = useState<boolean>(false);
+  const isLargeScreenOrDex = viewportSize.width >= 900 && viewportSize.height >= 500;
+
+  useEffect(() => {
+    if (!isKeyboardOpen || !isLargeScreenOrDex) {
+      setIsKeyboardFocusMode(false);
+    }
+  }, [isKeyboardOpen, isLargeScreenOrDex]);
+
+  useEffect(() => {
+    if (!isLargeScreenOrDex || !isKeyboardOpen) return;
+    const onScrollModeCheck = () => {
+      const headerH = topHeaderRef.current?.offsetHeight || 54;
+      if (window.scrollY >= headerH * 0.35 && !isKeyboardFocusMode) {
+        setIsKeyboardFocusMode(true);
+      } else if (window.scrollY <= headerH * 0.2 && isKeyboardFocusMode) {
+        setIsKeyboardFocusMode(false);
+      }
+    };
+    window.addEventListener('scroll', onScrollModeCheck, { passive: true });
+    return () => window.removeEventListener('scroll', onScrollModeCheck);
+  }, [isLargeScreenOrDex, isKeyboardOpen, isKeyboardFocusMode]);
+
+  const { faderElongation, faderHorizElongation, headerZoomFactor, rackZoomFactor, isWidescreenFrame } = (() => {
     const vw = viewportSize.width;
     const vh = viewportSize.height;
     const aspect = vh > 0 ? vw / vh : 1.77;
@@ -345,21 +368,57 @@ export const HeraApp: React.FC = () => {
     const headerH = topHeaderRef.current?.offsetHeight || 54;
     const voicingBarH = presetBarRef.current?.offsetHeight || 56;
     const arpAllowance = isArpSectionOpen && !isKeyboardOpen ? 44 : 0;
-    // Area of Interest 1: Top Header Bar + Faders/Filters/FX Section + Voicing/Preset Bar
-    // Faders smoothly adapt between 0.82x and 2.15x ("efeito de sanfona") across all screen proportions
-    // (Smartphones, Tablets, Samsung DeX, Monitors) so Area of Interest 1 fits 100% of the viewport.
-    const nonRackArea1H = headerH + voicingBarH + arpAllowance + 16;
     const baseRackH = 268;
 
-    const availableForRack = Math.max(baseRackH * 0.82, vh - nonRackArea1H);
-    const rawElongation = availableForRack / baseRackH;
-    const elongation = Math.min(2.15, Math.max(0.82, rawElongation));
+    // Proportional Header Zoom (0.70 .. 1.00 — max 30% reduction so all header items fit on one screen)
+    const naturalHeaderW = 1160;
+    const computedHeaderZoom = Math.min(1.0, Math.max(0.7, vw / naturalHeaderW));
+
+    // Horizontal Elongation of Fader Sections (1.00 .. 1.30 — ONLY elongation up to +30%, NEVER compression < 1.00)
+    const usableRackW = Math.max(320, Math.min(1420, vw - 24));
+    const isJp8Active = (params.SynthModel ?? 0) >= 0.5;
+    const estCardWidths = isJp8Active
+      ? [170, 580, 74, 340, 165, 380, 110, 170, 250]
+      : [120, 340, 74, 290, 120, 210, 110, 170, 250];
+    let accCardW = estCardWidths[0];
+    for (let i = 1; i < estCardWidths.length; i++) {
+      if (accCardW + 8 + estCardWidths[i] <= usableRackW) {
+        accCardW += 8 + estCardWidths[i];
+      } else {
+        break;
+      }
+    }
+    const rawHorizElong = usableRackW / Math.max(1, accCardW);
+    const computedHorizElong = Math.min(1.3, Math.max(1.0, rawHorizElong));
+
+    // Vertical Fader Adaptation:
+    // - In Large-Screen Keyboard Focus Mode (View 2): flatten faders up to 50% (0.50 .. 0.85) so
+    //   Flattened Faders + 8px Spacer + Presets + Arpeggiator + Ergonomic Keyboard fit 100% simultaneously!
+    // - Otherwise (View 1 or Smartphones): 0.82 .. 2.15
+    let elongation = 1.0;
+    if (isLargeScreenOrDex && isKeyboardOpen && isKeyboardFocusMode) {
+      const kbH = keyboardSectionRef.current?.offsetHeight || Math.min(250, Math.max(185, vh * 0.41));
+      const arpOpenH = isArpSectionOpen ? 48 : 0;
+      const availableForCompressedRack = vh - voicingBarH - arpOpenH - kbH - 28;
+      elongation = Math.min(0.88, Math.max(0.5, availableForCompressedRack / baseRackH));
+    } else {
+      const nonRackArea1H = headerH + voicingBarH + arpAllowance + 16;
+      const availableForRack = Math.max(baseRackH * 0.82, vh - nonRackArea1H);
+      const rawElongation = availableForRack / baseRackH;
+      elongation = Math.min(2.15, Math.max(0.82, rawElongation));
+    }
 
     const maxArea1H = headerH + voicingBarH + 16 + baseRackH * 2.15 + 24;
-    const widescreenFit = aspect >= 1.25 && vh <= maxArea1H && (!isArpSectionOpen || isKeyboardOpen);
+    const widescreenFit =
+      aspect >= 1.25 &&
+      vh <= maxArea1H &&
+      (!isArpSectionOpen || isKeyboardOpen) &&
+      !(isLargeScreenOrDex && isKeyboardOpen && isKeyboardFocusMode);
 
     return {
       faderElongation: elongation,
+      faderHorizElongation: computedHorizElong,
+      headerZoomFactor: computedHeaderZoom,
       rackZoomFactor: 1.0,
       isWidescreenFrame: widescreenFit,
     };
@@ -2079,10 +2138,11 @@ export const HeraApp: React.FC = () => {
 
           {/* Area of Interest 1: Top Header + Faders Section + Voicing Bar (100% fit on widescreen) */}
           <div className={`flex flex-col ${isWidescreenFrame ? 'min-h-[calc(100dvh-4px)] justify-between' : ''}`}>
-          {/* Top Roland Header Bar */}
+          {/* Top Roland Header Bar (Proportional Zoom up to 30% + Horizontal Drag if narrower than 70%) */}
           <div
             ref={topHeaderRef}
-            className="bg-gradient-to-r from-zinc-950 via-zinc-900 to-zinc-950 px-2 sm:px-4 py-1 sm:py-1.5 border-b-2 border-zinc-700 flex flex-wrap items-center justify-between gap-2"
+            style={{ zoom: headerZoomFactor }}
+            className="bg-gradient-to-r from-zinc-950 via-zinc-900 to-zinc-950 px-2 sm:px-4 py-1 sm:py-1.5 border-b-2 border-zinc-700 flex flex-nowrap overflow-x-auto scrollbar-none items-center justify-between gap-2"
           >
             {/* Branding / Badge + Dual-Synth Selector */}
             <div className="flex items-center gap-2.5">
@@ -2699,7 +2759,7 @@ export const HeraApp: React.FC = () => {
                       setIsMuted(next);
                       synthEngine.setMasterVolume(next ? 0 : masterVolume);
                     }}
-                    className="text-zinc-400 hover:text-zinc-200 cursor-pointer"
+                    className="w-5 flex items-center justify-center flex-shrink-0 text-zinc-400 hover:text-zinc-200 cursor-pointer"
                   >
                     {isMuted || masterVolume === 0 ? <VolumeX size={15} /> : <Volume2 size={15} />}
                   </button>
@@ -2719,10 +2779,11 @@ export const HeraApp: React.FC = () => {
                       setMasterVolume(val);
                       handleParamChange('MasterVolume', val);
                     }}
-                    className="w-16 accent-amber-500 cursor-pointer"
+                    className="w-16 flex-shrink-0 accent-amber-500 cursor-pointer"
                     title="Volume Master Geral (Canal das Teclas)"
                   />
-                  <span className="text-[9px] font-mono text-amber-400 font-bold min-w-[20px] text-right">
+                  {/* Fixed 3-digit width box ("0".."100") so the volume control never jumps or resizes dynamically */}
+                  <span className="text-[9px] font-mono text-amber-400 font-bold w-[28px] inline-block text-right tabular-nums flex-shrink-0">
                     {Math.min(100, Math.max(0, Math.round((isMuted ? 0 : masterVolume) * 100)))}
                   </span>
                 </div>
@@ -2773,24 +2834,30 @@ export const HeraApp: React.FC = () => {
             <div className="flex-1 bg-blue-600" />
           </div>
 
-          {/* Main Synth Control Panel (Up to +20% fader elongation; static 1.0x proportion on all other elements) */}
+          {/* Main Synth Control Panel (Vertical adaptation 0.50x..2.15x + Horizontal elongation 1.00x..1.30x) */}
           <div
             style={
               {
                 '--fader-elongation': faderElongation,
+                '--fader-horiz-elongation': faderHorizElongation,
               } as React.CSSProperties
             }
-            className="bg-zinc-900 px-1 py-1 sm:py-1.5 border-b border-zinc-800 w-full flex-1 flex flex-col justify-center"
+            className="bg-zinc-900 px-1 py-1 sm:py-1.5 border-b border-zinc-800 w-full flex-1 flex flex-col justify-center transition-all duration-300"
           >
             <div className="w-full overflow-x-auto pt-3 pb-1 scrollbar-thin">
               <div
                 style={{ zoom: rackZoomFactor }}
-                className="min-w-max w-fit flex flex-row items-stretch justify-start gap-1 sm:gap-1.5 px-2 mx-auto"
+                className="min-w-max w-fit flex flex-row items-stretch justify-start gap-1.5 sm:gap-2 px-2 mx-auto"
               >
                 {RACK_SECTION_IDS.map((sectionId) => renderRackSectionCard(sectionId, false))}
               </div>
             </div>
           </div>
+
+          {/* Breathing space between Faders and Strings (Voicing Bar) in Large-Screen Keyboard Focus Mode */}
+          {isLargeScreenOrDex && isKeyboardOpen && isKeyboardFocusMode && (
+            <div className="h-2 w-full bg-zinc-950 transition-all duration-300" />
+          )}
 
           {/* Area of Interest 1 Footer / Area of Interest 2 Header: Voicing & Preset Bar */}
           <div

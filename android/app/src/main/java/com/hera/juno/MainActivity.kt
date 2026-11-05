@@ -99,9 +99,12 @@ private val JunoWoodDark = Color(0xFF3A180B)
 // Smooth Cubic-Bezier curve for organic drawer unfolding, fader adaptation, and magnetic edge snapping
 private val SilkySmoothEasing = CubicBezierEasing(0.22f, 1.0f, 0.36f, 1.0f)
 
-// Proportional vertical elongation State for the Faders section (strictly capped at 1.0f .. 1.20f = max +20%).
+// Proportional vertical elongation State for the Faders section (0.50f .. 2.15f: flattens down to 50% in Large-Screen Keyboard Mode, elongates up to 2.15x in main view).
 // Passed as State<Float> and read ONLY inside Modifier.layout so animating faders causes ZERO recompositions!
 private val LocalFaderElongationState = compositionLocalOf<State<Float>> { mutableFloatStateOf(1.0f) }
+
+// Proportional horizontal elongation State for the Faders section (strictly 1.00f .. 1.30f = ONLY elongation up to +30%, NEVER compression < 1.00f).
+private val LocalFaderHorizElongationState = compositionLocalOf<State<Float>> { mutableFloatStateOf(1.0f) }
 
 class MainActivity : ComponentActivity() {
 
@@ -497,16 +500,33 @@ fun HeraJunoNativeScreen(
                         .weight(1f)
                         .fillMaxHeight()
                 ) {
-                    val responsiveSemitones = if (maxWidth >= 820.dp) 48 else 36
+                    val isLargeScreenOrDex = maxHeight >= 385.dp && maxWidth >= 680.dp
+                    var keyboardOctaves by remember { mutableIntStateOf(3) }
+                    val responsiveSemitones = (keyboardOctaves * 12).coerceIn(24, 48)
                     val currentDensity = LocalDensity.current
 
                     // Sub-pixel accurate measured heights of TopHeaderBar (+ Profile Drawer), VoicingPresetBar,
-                    // PresetBrowser Drawer, and Arpeggiator Drawer so Area of Interest 1 and Area of Interest 2
-                    // both fit 100.0% of the screen across all proportions:
+                    // PresetBrowser Drawer, Arpeggiator Drawer, and Keyboard Box so both View 1 (Main Synth Focus)
+                    // and View 2 (Keyboard Performance Mode) fit 100.0% of the screen across all proportions:
                     var measuredHeaderPx by remember { mutableIntStateOf(0) }
                     var measuredVoicingPx by remember { mutableIntStateOf(0) }
                     var measuredArpPx by remember { mutableIntStateOf(0) }
                     var measuredPresetsPx by remember { mutableIntStateOf(0) }
+                    var measuredKeyboardBoxPx by remember { mutableIntStateOf(0) }
+
+                    // On Large Screens (Tablets / Samsung DeX), scrolling down or activating Keyboard View switches
+                    // into "Modo de Visualização das Teclas" (isKeyboardFocusMode = true):
+                    // TopHeaderBar scrolls off the top, Faders flatten by up to 50% (staying playable at the top of the screen),
+                    // an 8dp breathing space separates Faders from Strings (VoicingPresetBar), followed by ARP and an
+                    // ergonomic bottom-half Piano Keyboard — all fitting 100.0% inside the screen!
+                    var isKeyboardFocusMode by remember { mutableStateOf(false) }
+                    var isModeAnimating by remember { mutableStateOf(false) }
+
+                    LaunchedEffect(showKeyboard, isLargeScreenOrDex) {
+                        if (!showKeyboard || !isLargeScreenOrDex) {
+                            isKeyboardFocusMode = false
+                        }
+                    }
 
                     val headerHeightDp = if (measuredHeaderPx > 0) {
                         with(currentDensity) { measuredHeaderPx.toDp().value }
@@ -530,21 +550,58 @@ fun HeraJunoNativeScreen(
                     }
 
                     val viewportHeightPx = constraints.maxHeight
+                    val viewportWidthPx = constraints.maxWidth
                     val rainbowPx = with(currentDensity) { 3.dp.roundToPx() }
                     val scrollbarPx = with(currentDensity) { 8.dp.roundToPx() }
                     val separatorsTotalPx = rainbowPx * 2 + scrollbarPx
+
+                    // Breathing space between Faders section and Strings (VoicingPresetBar) in Large-Screen Keyboard Mode
+                    val targetRackToVoicingSpacerDp = if (isLargeScreenOrDex && showKeyboard && isKeyboardFocusMode) 8.dp else 0.dp
+                    val rackToVoicingSpacerDp by animateDpAsState(
+                        targetValue = targetRackToVoicingSpacerDp,
+                        animationSpec = tween(durationMillis = 360, easing = SilkySmoothEasing),
+                        label = "rackToVoicingSpacer"
+                    )
+                    val rackToVoicingSpacerPx = with(currentDensity) { rackToVoicingSpacerDp.roundToPx() }
+                    val targetRackToVoicingSpacerPx = with(currentDensity) { targetRackToVoicingSpacerDp.roundToPx() }
 
                     // Fixed static heights inside Area of Interest 1:
                     // Header + TopRainbow (3dp) + Horizontal Scrollbar (8dp) + BottomRainbow (3dp) + VoicingBar
                     val staticNonRackArea1Dp = headerHeightDp + 3f + 8f + 3f + voicingHeightDp
                     val baseRackHeightDp = 232f
 
-                    // Dynamic Fader Accordion ("Efeito de Sanfona dos Faders", 0.82f .. 2.15f):
-                    // Works across ALL screen proportions (Smartphones, Tablets, Samsung DeX full/windowed, Monitors).
-                    // - When Keyboard is open (Area 2 active below), Area 1 frames Header + Faders + Voicing at 100.0% of viewportHeightPx.
-                    // - When Keyboard is closed and ARP is open, the faders smoothly compress by 100% of measuredArpPx so
-                    //   Header + Faders + Voicing + ARP fits 100.0% of viewportHeightPx with zero vertical scroll leftover ("zero sobra").
-                    // - When PRESETS or PERFIL opens, the faders smoothly compress so the drawer fits cleanly inside Area 1.
+                    // Size the Keyboard:
+                    // - On Large Screens (Tablets / Samsung DeX): keep the keyboard ergonomic in the bottom half of the screen
+                    //   (~41% of screen height, 168dp..218dp) so keys are never overly elongated vertically, leaving room above
+                    //   for the 50%-flattened playable Faders + Strings + Arpeggiator!
+                    // - On Smartphones (!isLargeScreenOrDex): preserve the existing Area 2 height behavior 100% untouched.
+                    val targetKeyboardSectionHeight = remember(
+                        isLargeScreenOrDex,
+                        maxHeight.value,
+                        voicingHeightDp,
+                        arpHeightDp,
+                        presetsHeightDp,
+                        arpExpanded,
+                        showPresetsDialog
+                    ) {
+                        if (isLargeScreenOrDex) {
+                            (maxHeight.value * 0.41f).coerceIn(168f, 218f).dp
+                        } else {
+                            val availableBelowVoicingDp = maxHeight.value - voicingHeightDp - arpHeightDp - presetsHeightDp - 6f
+                            availableBelowVoicingDp.coerceIn(165f, 460f).dp
+                        }
+                    }
+                    val keyboardSectionHeight by animateDpAsState(
+                        targetValue = targetKeyboardSectionHeight,
+                        animationSpec = tween(durationMillis = 300, easing = SilkySmoothEasing),
+                        label = "keyboardSectionHeight"
+                    )
+
+                    // Dynamic Fader Accordion ("Efeito de Sanfona dos Faders", 0.50f .. 2.15f):
+                    // - In View 1 (Main Focus, or Smartphones): frames Header + Faders + Voicing at 100.0% of viewportHeightPx.
+                    // - In View 2 on Large Screens (isLargeScreenOrDex && showKeyboard && isKeyboardFocusMode):
+                    //   flattens Faders down to 50%..88% so Compressed Faders + 8dp Spacer + Strings + ARP + Ergonomic Keyboard
+                    //   fit 100.0% of viewportHeightPx simultaneously!
                     val baseRackHeightPx = with(currentDensity) { baseRackHeightDp.dp.toPx() }.coerceAtLeast(1f)
                     val inlineDrawerAllowancePx = remember(
                         arpExpanded,
@@ -566,19 +623,53 @@ fun HeraJunoNativeScreen(
                         }
                         arpPx + presetsPx
                     }
+                    val keyboardFocusDrawersAndKeysPx = remember(
+                        arpExpanded,
+                        showPresetsDialog,
+                        measuredArpPx,
+                        measuredPresetsPx,
+                        measuredKeyboardBoxPx,
+                        targetKeyboardSectionHeight,
+                        currentDensity
+                    ) {
+                        val arpPx = if (arpExpanded) {
+                            if (measuredArpPx > 0) measuredArpPx.toFloat() else with(currentDensity) { 46.dp.toPx() }
+                        } else {
+                            0f
+                        }
+                        val presetsPx = if (showPresetsDialog) {
+                            if (measuredPresetsPx > 0) measuredPresetsPx.toFloat() else with(currentDensity) { 58.dp.toPx() }
+                        } else {
+                            0f
+                        }
+                        val kbPx = if (measuredKeyboardBoxPx > 0) {
+                            measuredKeyboardBoxPx.toFloat()
+                        } else {
+                            with(currentDensity) { (targetKeyboardSectionHeight + 6.dp).toPx() }
+                        }
+                        arpPx + presetsPx + kbPx
+                    }
                     val targetFaderElongation = remember(
+                        isLargeScreenOrDex,
+                        showKeyboard,
+                        isKeyboardFocusMode,
                         viewportHeightPx,
                         measuredHeaderPx,
                         measuredVoicingPx,
                         separatorsTotalPx,
-                        inlineDrawerAllowancePx
+                        targetRackToVoicingSpacerPx,
+                        inlineDrawerAllowancePx,
+                        keyboardFocusDrawersAndKeysPx
                     ) {
                         if (measuredHeaderPx > 0 && measuredVoicingPx > 0) {
-                            val idealRackPx = (viewportHeightPx - measuredHeaderPx - measuredVoicingPx - separatorsTotalPx).toFloat() - inlineDrawerAllowancePx
-                            (idealRackPx / baseRackHeightPx).coerceIn(0.82f, 2.15f)
+                            if (isLargeScreenOrDex && showKeyboard && isKeyboardFocusMode) {
+                                val idealCompressedRackPx = (viewportHeightPx - separatorsTotalPx - targetRackToVoicingSpacerPx - measuredVoicingPx).toFloat() - keyboardFocusDrawersAndKeysPx
+                                (idealCompressedRackPx / baseRackHeightPx).coerceIn(0.50f, 0.88f)
+                            } else {
+                                val idealRackPx = (viewportHeightPx - measuredHeaderPx - measuredVoicingPx - separatorsTotalPx).toFloat() - inlineDrawerAllowancePx
+                                (idealRackPx / baseRackHeightPx).coerceIn(0.82f, 2.15f)
+                            }
                         } else {
-                            // Start at 1.0f on frame 0 so when measurements arrive on frame 1, the faders smoothly
-                            // glide ("efeito de sanfona") into the exact 100% viewport fit!
                             1.00f
                         }
                     }
@@ -590,26 +681,6 @@ fun HeraJunoNativeScreen(
                     )
                     val rackZoomedDensity = previewMatchedDensity
 
-                    // Size the Keyboard in Area of Interest 2 so that when scrolled to the bottom (maxScroll),
-                    // VoicingPresetBar sits right at the top of the screen, followed by Arpeggiator and Keyboard to the bottom
-                    // on BOTH Smartphones and large Tablet / Samsung DeX viewports!
-                    val targetKeyboardSectionHeight = remember(
-                        maxHeight.value,
-                        voicingHeightDp,
-                        arpHeightDp,
-                        presetsHeightDp,
-                        arpExpanded,
-                        showPresetsDialog
-                    ) {
-                        val availableBelowVoicingDp = maxHeight.value - voicingHeightDp - arpHeightDp - presetsHeightDp - 6f
-                        availableBelowVoicingDp.coerceIn(165f, 460f).dp
-                    }
-                    val keyboardSectionHeight by animateDpAsState(
-                        targetValue = targetKeyboardSectionHeight,
-                        animationSpec = tween(durationMillis = 300, easing = SilkySmoothEasing),
-                        label = "keyboardSectionHeight"
-                    )
-
                     // Track when any drawer is actively unfolding/folding so magnetic scroll doesn't fight drawer animations
                     var isDrawerTransitioning by remember { mutableStateOf(false) }
                     LaunchedEffect(showKeyboard, arpExpanded, showPresetsDialog, showProfileDialog) {
@@ -618,34 +689,76 @@ fun HeraJunoNativeScreen(
                         isDrawerTransitioning = false
                     }
 
-                    // Delicate, Silky Soft Magnetic Edge Snap:
-                    // User has full manual control while dragging/scrolling, and when releasing near the top edge (Area 1)
-                    // or near the bottom edge (Area 2), the view gently glides into place with a smooth cubic-bezier damper.
+                    // Delicate, Silky Soft Magnetic Edge Snap & Large-Screen Two-View Mode Switcher:
+                    // - On Large Screens (isLargeScreenOrDex && showKeyboard): pulling/scrolling down switches smoothly into
+                    //   View 2 (isKeyboardFocusMode = true, scrolling TopHeaderBar off-screen to measuredHeaderPx and flattening
+                    //   Faders up to 50% so Faders + Spacer + Strings + Arp + Keyboard fit 100% on screen). Pulling/scrolling
+                    //   back up toward the header restores View 1 (isKeyboardFocusMode = false, scroll = 0, full-height Faders).
+                    // - On Smartphones (!isLargeScreenOrDex): preserves the existing magnetic edge snap 100% untouched.
                     val isScrollInProgress = mainVerticalScroll.isScrollInProgress
-                    LaunchedEffect(isScrollInProgress, isDrawerTransitioning) {
-                        val maxScroll = mainVerticalScroll.maxValue
-                        if (!isScrollInProgress && !isDrawerTransitioning && maxScroll > 6) {
-                            delay(24L)
-                            if (!mainVerticalScroll.isScrollInProgress && !isDrawerTransitioning) {
+                    LaunchedEffect(isScrollInProgress, isDrawerTransitioning, isLargeScreenOrDex, showKeyboard) {
+                        if (!isScrollInProgress && !isDrawerTransitioning && !isModeAnimating) {
+                            delay(28L)
+                            if (!mainVerticalScroll.isScrollInProgress && !isDrawerTransitioning && !isModeAnimating) {
                                 val current = mainVerticalScroll.value
                                 val latestMax = mainVerticalScroll.maxValue
-                                val snapThresholdPx = (latestMax * 0.28f).roundToInt().coerceIn(22, 165)
-                                if (current in 2..snapThresholdPx) {
-                                    mainVerticalScroll.animateScrollTo(
-                                        value = 0,
-                                        animationSpec = tween(
-                                            durationMillis = 420,
-                                            easing = SilkySmoothEasing
+                                if (isLargeScreenOrDex && showKeyboard && measuredHeaderPx > 0) {
+                                    val downTriggerPx = (measuredHeaderPx * 0.25f).roundToInt().coerceIn(12, 48)
+                                    val upTriggerPx = (measuredHeaderPx * 0.75f).roundToInt().coerceAtLeast(downTriggerPx + 6)
+                                    if (!isKeyboardFocusMode && current >= downTriggerPx) {
+                                        isModeAnimating = true
+                                        isKeyboardFocusMode = true
+                                        mainVerticalScroll.animateScrollTo(
+                                            value = measuredHeaderPx,
+                                            animationSpec = tween(durationMillis = 380, easing = SilkySmoothEasing)
                                         )
-                                    )
-                                } else if (current in (latestMax - snapThresholdPx) until (latestMax - 1)) {
-                                    mainVerticalScroll.animateScrollTo(
-                                        value = latestMax,
-                                        animationSpec = tween(
-                                            durationMillis = 420,
-                                            easing = SilkySmoothEasing
+                                        delay(380L)
+                                        if (mainVerticalScroll.maxValue > 0 && mainVerticalScroll.value != measuredHeaderPx) {
+                                            mainVerticalScroll.animateScrollTo(
+                                                value = measuredHeaderPx.coerceAtMost(mainVerticalScroll.maxValue),
+                                                animationSpec = tween(durationMillis = 180, easing = SilkySmoothEasing)
+                                            )
+                                        }
+                                        isModeAnimating = false
+                                    } else if (isKeyboardFocusMode && current <= upTriggerPx) {
+                                        isModeAnimating = true
+                                        isKeyboardFocusMode = false
+                                        mainVerticalScroll.animateScrollTo(
+                                            value = 0,
+                                            animationSpec = tween(durationMillis = 380, easing = SilkySmoothEasing)
                                         )
-                                    )
+                                        delay(380L)
+                                        isModeAnimating = false
+                                    } else if (!isKeyboardFocusMode && current in 1 until downTriggerPx) {
+                                        mainVerticalScroll.animateScrollTo(
+                                            value = 0,
+                                            animationSpec = tween(durationMillis = 320, easing = SilkySmoothEasing)
+                                        )
+                                    } else if (isKeyboardFocusMode && current != measuredHeaderPx && latestMax >= measuredHeaderPx) {
+                                        mainVerticalScroll.animateScrollTo(
+                                            value = measuredHeaderPx.coerceAtMost(latestMax),
+                                            animationSpec = tween(durationMillis = 320, easing = SilkySmoothEasing)
+                                        )
+                                    }
+                                } else if (latestMax > 6) {
+                                    val snapThresholdPx = (latestMax * 0.28f).roundToInt().coerceIn(22, 165)
+                                    if (current in 2..snapThresholdPx) {
+                                        mainVerticalScroll.animateScrollTo(
+                                            value = 0,
+                                            animationSpec = tween(
+                                                durationMillis = 420,
+                                                easing = SilkySmoothEasing
+                                            )
+                                        )
+                                    } else if (current in (latestMax - snapThresholdPx) until (latestMax - 1)) {
+                                        mainVerticalScroll.animateScrollTo(
+                                            value = latestMax,
+                                            animationSpec = tween(
+                                                durationMillis = 420,
+                                                easing = SilkySmoothEasing
+                                            )
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -758,7 +871,10 @@ fun HeraJunoNativeScreen(
                     // 1B. Signature Roland Juno-60 5-Color Metallic Accent Stripe (Top Separator)
                     JunoRainbowSeparator()
 
-                    // 2. MAIN HORIZONTAL SCROLLABLE SYNTHESIZER RACK (Up to +20% smooth fader elongation, GPU cached)
+                    // 2. MAIN HORIZONTAL SCROLLABLE SYNTHESIZER RACK
+                    // - Vertical adaptation: 0.50f .. 2.15f (flattens up to 50% in Large-Screen Keyboard Mode, expands up to 2.15x in Main View)
+                    // - Horizontal elongation: 1.00f .. 1.30f (ONLY elongates up to +30%, NEVER compresses < 1.00f) so that
+                    //   complete visible sections fill 100.0% of the screen width and no section is ever cut in half on the right!
                     val rackScrollState = rememberScrollState()
                     val rackSections = remember {
                         listOf(
@@ -773,32 +889,112 @@ fun HeraJunoNativeScreen(
                             MidiSection.REVERB
                         )
                     }
+                    val baseCardWidthsPx = remember { IntArray(rackSections.size) }
+                    val cardSnapOffsetsPx = remember { IntArray(rackSections.size) }
+                    var baseWidthsVersion by remember { mutableIntStateOf(0) }
+                    LaunchedEffect(isJupiter8) {
+                        for (i in baseCardWidthsPx.indices) baseCardWidthsPx[i] = 0
+                        baseWidthsVersion = 0
+                    }
+
+                    val padHPx = with(rackZoomedDensity) { 8.dp.roundToPx() }
+                    val baseGapPx = with(rackZoomedDensity) { 8.dp.roundToPx() }
+                    val usableRackW = (viewportWidthPx - padHPx * 2).coerceAtLeast(1)
+
+                    // Compute how many complete sections k (k >= 1) fit at 1.00x base proportion and elongate horizontally
+                    // up to +30% (1.00f .. 1.30f, never < 1.00f) so those k sections fill 100% of usableRackW!
+                    val horizFitPlan = remember(baseWidthsVersion, usableRackW, baseGapPx, isJupiter8) {
+                        if (baseWidthsVersion == 0 || baseCardWidthsPx[0] <= 0) {
+                            1 to 1.00f
+                        } else {
+                            var k = 1
+                            var accW = baseCardWidthsPx[0]
+                            for (i in 1 until rackSections.size) {
+                                val nextW = accW + baseGapPx + baseCardWidthsPx[i]
+                                if (nextW <= usableRackW) {
+                                    accW = nextW
+                                    k = i + 1
+                                } else {
+                                    break
+                                }
+                            }
+                            val neededScale = (usableRackW.toFloat() / accW.toFloat()).coerceIn(1.00f, 1.30f)
+                            k to neededScale
+                        }
+                    }
+                    val fittingCardsCount = horizFitPlan.first
+                    val targetHorizElongation = horizFitPlan.second
+                    val faderHorizElongationState = animateFloatAsState(
+                        targetValue = targetHorizElongation,
+                        animationSpec = tween(durationMillis = 300, easing = SilkySmoothEasing),
+                        label = "faderHorizElongation"
+                    )
+
+                    // Gentle horizontal magnetic alignment to section card boundaries when releasing horizontal scroll
+                    val isRackHorizScrollInProgress = rackScrollState.isScrollInProgress
+                    LaunchedEffect(isRackHorizScrollInProgress, baseWidthsVersion) {
+                        val maxHScroll = rackScrollState.maxValue
+                        if (!isRackHorizScrollInProgress && maxHScroll > 8 && baseWidthsVersion > 0) {
+                            delay(40L)
+                            if (!rackScrollState.isScrollInProgress) {
+                                val curr = rackScrollState.value
+                                val latestMax = rackScrollState.maxValue
+                                if (curr in 1 until (latestMax - 6)) {
+                                    var bestTarget = curr
+                                    var bestDist = Int.MAX_VALUE
+                                    for (idx in cardSnapOffsetsPx.indices) {
+                                        val snapX = cardSnapOffsetsPx[idx].coerceIn(0, latestMax)
+                                        val dist = kotlin.math.abs(curr - snapX)
+                                        if (dist < bestDist) {
+                                            bestDist = dist
+                                            bestTarget = snapX
+                                        }
+                                    }
+                                    // Snap gently if within 95px of a section boundary so no section stays cut in half
+                                    if (bestDist in 2..95) {
+                                        rackScrollState.animateScrollTo(
+                                            value = bestTarget,
+                                            animationSpec = tween(durationMillis = 320, easing = SilkySmoothEasing)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     CompositionLocalProvider(
                         LocalDensity provides rackZoomedDensity,
-                        LocalFaderElongationState provides faderElongationState
+                        LocalFaderElongationState provides faderElongationState,
+                        LocalFaderHorizElongationState provides faderHorizElongationState
                     ) {
-                        Row(
+                        Box(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .layout { measurable, constraints ->
-                                    val elong = faderElongationState.value.coerceIn(0.82f, 2.15f)
+                                    val elong = faderElongationState.value.coerceIn(0.50f, 2.15f)
                                     val animatedH = (232f * elong).dp.roundToPx()
-                                    val minRackPx = (232f * 0.82f).dp.roundToPx()
+                                    val minRackPx = (232f * 0.50f).dp.roundToPx()
                                     val maxRackPx = (232f * 2.15f).dp.roundToPx()
                                     // Lock to exact integer pixel remainder when animation settles (within 6px) so
-                                    // Header + Separators + Rack + Voicing (+ inline drawers) == viewportHeightPx (0px sobra!)
-                                    val exactArea1RackPx = if (measuredHeaderPx > 0 && measuredVoicingPx > 0) {
-                                        (viewportHeightPx - measuredHeaderPx - measuredVoicingPx - separatorsTotalPx - inlineDrawerAllowancePx.roundToInt())
-                                            .coerceIn(minRackPx, maxRackPx)
+                                    // View 1 (Header + Rack + Voicing) OR View 2 (Compressed Rack + Spacer + Voicing + Arp + Keyboard)
+                                    // equals 100.0% of viewportHeightPx with 0px leftover!
+                                    val exactTargetRackPx = if (measuredHeaderPx > 0 && measuredVoicingPx > 0) {
+                                        if (isLargeScreenOrDex && showKeyboard && isKeyboardFocusMode) {
+                                            (viewportHeightPx - separatorsTotalPx - rackToVoicingSpacerPx - measuredVoicingPx - keyboardFocusDrawersAndKeysPx.roundToInt())
+                                                .coerceIn(minRackPx, maxRackPx)
+                                        } else {
+                                            (viewportHeightPx - measuredHeaderPx - measuredVoicingPx - separatorsTotalPx - inlineDrawerAllowancePx.roundToInt())
+                                                .coerceIn(minRackPx, maxRackPx)
+                                        }
                                     } else {
                                         animatedH
                                     }
-                                    val targetH = if (kotlin.math.abs(animatedH - exactArea1RackPx) <= 6) {
-                                        exactArea1RackPx
+                                    val targetH = if (kotlin.math.abs(animatedH - exactTargetRackPx) <= 6) {
+                                        exactTargetRackPx
                                     } else {
                                         animatedH
                                     }
-                                    val padV = (3.5f * elong.coerceAtMost(1.35f)).dp.roundToPx()
+                                    val padV = (3.5f * elong.coerceIn(0.50f, 1.35f)).dp.roundToPx()
                                     val innerH = (targetH - padV * 2).coerceAtLeast(0)
                                     val placeable = measurable.measure(
                                         constraints.copy(minHeight = innerH, maxHeight = innerH)
@@ -810,18 +1006,83 @@ fun HeraJunoNativeScreen(
                                 .graphicsLayer { clip = true }
                                 .background(Color(0xFF11131A))
                                 .horizontalScroll(rackScrollState)
-                                .padding(horizontal = 8.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            for (sec in rackSections) {
-                                SynthRackSectionCard(
-                                    section = sec,
-                                    paramState = paramState,
-                                    midiManager = midiManager,
-                                    uiRevision = rev,
-                                    onUpdateParam = onUpdateParam,
-                                    onNotifyUiChanged = onNotifyUiChanged
+                            Layout(
+                                content = {
+                                    for (sec in rackSections) {
+                                        SynthRackSectionCard(
+                                            section = sec,
+                                            paramState = paramState,
+                                            midiManager = midiManager,
+                                            uiRevision = rev,
+                                            onUpdateParam = onUpdateParam,
+                                            onNotifyUiChanged = onNotifyUiChanged
+                                        )
+                                    }
+                                }
+                            ) { measurables, constraints ->
+                                val hElong = faderHorizElongationState.value.coerceIn(1.00f, 1.30f)
+                                val cardConstraints = Constraints(
+                                    minWidth = 0,
+                                    maxWidth = Constraints.Infinity,
+                                    minHeight = constraints.minHeight,
+                                    maxHeight = constraints.maxHeight
                                 )
+
+                                // 1. Measure all 9 cards once to record unscaled 1.00x base widths if not yet recorded
+                                val initialPlaceables = Array(measurables.size) { idx ->
+                                    measurables[idx].measure(cardConstraints)
+                                }
+                                var updatedBase = false
+                                for (idx in initialPlaceables.indices) {
+                                    val unscaledW = (initialPlaceables[idx].width.toFloat() / hElong).roundToInt().coerceAtLeast(64)
+                                    if (baseCardWidthsPx[idx] == 0 || kotlin.math.abs(baseCardWidthsPx[idx] - unscaledW) > 6) {
+                                        baseCardWidthsPx[idx] = unscaledW
+                                        updatedBase = true
+                                    }
+                                }
+                                if (updatedBase && baseWidthsVersion == 0) {
+                                    baseWidthsVersion = 1
+                                }
+
+                                // 2. Determine exact pixel widths for the k fitting cards so that when neededScale <= 1.30f,
+                                // the k cards + (k - 1) gaps equal 100.0% of usableRackW (0px of card k peeking in on the right!)
+                                val k = fittingCardsCount.coerceIn(1, measurables.size)
+                                val scaledGapPx = (baseGapPx * hElong).roundToInt()
+                                val sumKWidths = (0 until k).sumOf { initialPlaceables[it].width }
+                                val sumKTotal = sumKWidths + (k - 1) * scaledGapPx
+                                val remainderPx = usableRackW - sumKTotal
+
+                                // If remainderPx is small/positive (within the +30% elongation cap), absorb any rounding pixels
+                                // into the gaps between the k cards AND add a right margin buffer before card k so card k starts at >= viewportWidthPx!
+                                val extraPerGap = if (k > 1 && remainderPx in 1..48) remainderPx / (k - 1) else 0
+                                val extraGapRemainder = if (k > 1 && remainderPx in 1..48) remainderPx % (k - 1) else 0
+
+                                val xPositions = IntArray(measurables.size)
+                                var cursorX = padHPx
+                                for (idx in initialPlaceables.indices) {
+                                    xPositions[idx] = cursorX
+                                    cardSnapOffsetsPx[idx] = (cursorX - padHPx).coerceAtLeast(0)
+                                    cursorX += initialPlaceables[idx].width
+                                    if (idx < initialPlaceables.lastIndex) {
+                                        cursorX += if (idx < k - 1) {
+                                            scaledGapPx + extraPerGap + if (idx < extraGapRemainder) 1 else 0
+                                        } else if (idx == k - 1 && remainderPx in 0..32) {
+                                            // Push the (k+1)-th card past the right edge of the viewport so its border never peeks in at scroll=0
+                                            val remainingToRightEdge = (viewportWidthPx - cursorX).coerceAtLeast(scaledGapPx)
+                                            remainingToRightEdge + padHPx
+                                        } else {
+                                            scaledGapPx
+                                        }
+                                    }
+                                }
+                                val totalRackW = (cursorX + padHPx).coerceAtLeast(viewportWidthPx)
+
+                                layout(totalRackW, constraints.maxHeight) {
+                                    for (idx in initialPlaceables.indices) {
+                                        initialPlaceables[idx].placeRelative(xPositions[idx], 0)
+                                    }
+                                }
                             }
                         }
                     }
@@ -890,6 +1151,16 @@ fun HeraJunoNativeScreen(
                     // 2B. Signature Roland Juno-60 5-Color Metallic Accent Stripe
                     JunoRainbowSeparator()
 
+                    // 2B-Spacer. Breathing room between Faders and Strings (VoicingPresetBar) in Large-Screen Keyboard Focus Mode
+                    if (rackToVoicingSpacerDp > 0.dp) {
+                        Spacer(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(rackToVoicingSpacerDp)
+                                .background(Color(0xFF090B10))
+                        )
+                    }
+
                     // 2C. FOOTER OF AREA OF INTEREST 1 (Voicing / Presets Bar — fits 100% at the bottom of the first screen)
                     Box(
                         modifier = Modifier
@@ -919,7 +1190,53 @@ fun HeraJunoNativeScreen(
                                 arpExpanded = !arpExpanded
                             },
                             onToggleKeyboard = {
-                                showKeyboard = !showKeyboard
+                                if (isLargeScreenOrDex) {
+                                    if (!showKeyboard) {
+                                        showKeyboard = true
+                                        isKeyboardFocusMode = true
+                                        coroutineScope.launch {
+                                            isModeAnimating = true
+                                            delay(40L)
+                                            if (measuredHeaderPx > 0) {
+                                                mainVerticalScroll.animateScrollTo(
+                                                    value = measuredHeaderPx,
+                                                    animationSpec = tween(durationMillis = 380, easing = SilkySmoothEasing)
+                                                )
+                                            }
+                                            delay(360L)
+                                            isModeAnimating = false
+                                        }
+                                    } else if (!isKeyboardFocusMode) {
+                                        // Already open below: glide smoothly into Keyboard Focus Mode
+                                        isKeyboardFocusMode = true
+                                        coroutineScope.launch {
+                                            isModeAnimating = true
+                                            if (measuredHeaderPx > 0) {
+                                                mainVerticalScroll.animateScrollTo(
+                                                    value = measuredHeaderPx,
+                                                    animationSpec = tween(durationMillis = 380, easing = SilkySmoothEasing)
+                                                )
+                                            }
+                                            delay(380L)
+                                            isModeAnimating = false
+                                        }
+                                    } else {
+                                        // Close keyboard and glide smoothly back to Main Synth View (View 1)
+                                        isKeyboardFocusMode = false
+                                        showKeyboard = false
+                                        coroutineScope.launch {
+                                            isModeAnimating = true
+                                            mainVerticalScroll.animateScrollTo(
+                                                value = 0,
+                                                animationSpec = tween(durationMillis = 360, easing = SilkySmoothEasing)
+                                            )
+                                            delay(360L)
+                                            isModeAnimating = false
+                                        }
+                                    }
+                                } else {
+                                    showKeyboard = !showKeyboard
+                                }
                             },
                             onSaveUserPreset = { showSavePresetDialog = true },
                             onExportPreset = {
@@ -1045,6 +1362,7 @@ fun HeraJunoNativeScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .graphicsLayer { clip = true }
+                                    .onSizeChanged { measuredKeyboardBoxPx = it.height }
                                     .padding(horizontal = 6.dp, vertical = 3.dp)
                             ) {
                                 Column(
@@ -1056,7 +1374,7 @@ fun HeraJunoNativeScreen(
                                         .padding(horizontal = 6.dp, vertical = 5.dp),
                                     verticalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
-                        // Top Controls Bar (Octave Transpose, HOLD, Shortcuts Toggle, and 61-Key description)
+                        // Top Controls Bar (Octave Transpose, Keys Span 2/3/4 OCT, HOLD, Shortcuts Toggle, and View Switcher)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1114,6 +1432,44 @@ fun HeraJunoNativeScreen(
                                     }
                                 }
 
+                                // Ergonomic Key Span Selector (2 OCT / 3 OCT / 4 OCT — defaults to 3 OCT so keys are wide & comfortable!)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                    modifier = Modifier
+                                        .background(Color(0xFF080A0E), RoundedCornerShape(3.dp))
+                                        .border(1.dp, Color(0xFF222838), RoundedCornerShape(3.dp))
+                                        .padding(horizontal = 4.dp, vertical = 1.5.dp)
+                                ) {
+                                    Text(
+                                        text = "TECLAS",
+                                        color = Color(0xFF6B7280),
+                                        fontSize = 7.2.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace,
+                                        modifier = Modifier.padding(end = 2.dp)
+                                    )
+                                    for (octOpt in listOf(2, 3, 4)) {
+                                        val isSelOct = keyboardOctaves == octOpt
+                                        Box(
+                                            contentAlignment = Alignment.Center,
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(2.dp))
+                                                .background(if (isSelOct) JunoAmberLed else Color(0xFF181D2A))
+                                                .clickable { keyboardOctaves = octOpt }
+                                                .padding(horizontal = 4.5.dp, vertical = 1.dp)
+                                        ) {
+                                            Text(
+                                                text = "${octOpt}OCT",
+                                                color = if (isSelOct) Color.Black else Color(0xFF9CA3AF),
+                                                fontSize = 7.5.sp,
+                                                fontFamily = FontFamily.Monospace,
+                                                fontWeight = FontWeight.ExtraBold
+                                            )
+                                        }
+                                    }
+                                }
+
                                 // HOLD Button
                                 Box(
                                     contentAlignment = Alignment.Center,
@@ -1165,25 +1521,48 @@ fun HeraJunoNativeScreen(
                                 }
                             }
 
-                            // Right description
+                            // Right description & Large-Screen View Switcher
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
+                                if (isLargeScreenOrDex) {
+                                    Box(
+                                        contentAlignment = Alignment.Center,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(3.dp))
+                                            .background(if (isKeyboardFocusMode) Color(0xFF0F2922) else Color(0xFF161A25))
+                                            .border(
+                                                1.dp,
+                                                if (isKeyboardFocusMode) JunoGreenReady else Color(0xFF293042),
+                                                RoundedCornerShape(3.dp)
+                                            )
+                                            .clickable {
+                                                val nextFocus = !isKeyboardFocusMode
+                                                isKeyboardFocusMode = nextFocus
+                                                coroutineScope.launch {
+                                                    isModeAnimating = true
+                                                    mainVerticalScroll.animateScrollTo(
+                                                        value = if (nextFocus) measuredHeaderPx else 0,
+                                                        animationSpec = tween(durationMillis = 380, easing = SilkySmoothEasing)
+                                                    )
+                                                    delay(380L)
+                                                    isModeAnimating = false
+                                                }
+                                            }
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Text(
+                                            text = if (isKeyboardFocusMode) "▴ EXPANDIR FADERS" else "▾ FOCO TECLADO + FADERS 50%",
+                                            color = if (isKeyboardFocusMode) Color(0xFF6EE7B7) else Color(0xFF9CA3AF),
+                                            fontSize = 7.2.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontWeight = FontWeight.ExtraBold
+                                        )
+                                    }
+                                }
                                 Text(
-                                    text = "61-Key Polyphonic Keyboard",
-                                    color = Color(0xFF6B7280),
-                                    fontSize = 7.sp,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                                Text(
-                                    text = "|",
-                                    color = Color(0xFF374151),
-                                    fontSize = 7.sp,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                                Text(
-                                    text = "Click & Drag / QWERTY Keyboard Supported",
+                                    text = "${responsiveSemitones}-Key Polyphonic • Drag Glissando",
                                     color = Color(0xFF6B7280),
                                     fontSize = 7.sp,
                                     fontFamily = FontFamily.Monospace
@@ -1621,7 +2000,12 @@ private fun TopHeaderBar(
     onPanic: () -> Unit
 ) {
     val headerScroll = rememberScrollState()
-    Row(
+    val baseHeaderDensity = LocalDensity.current
+    // Proportional Header Zoom (up to 30% max reduction: 0.70f .. 1.00f):
+    // Automatically scales the header proportionally so 100% of its controls (including TELA ON and PANIC)
+    // fit inside a single screen whenever possible within the 30% zoom limit. If a screen is narrower than
+    // 70% of the natural header width, zoom clamps at -30% (0.70f) and horizontal touchscreen drag takes over.
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
             .background(
@@ -1629,16 +2013,31 @@ private fun TopHeaderBar(
                     listOf(Color(0xFF090A0F), Color(0xFF11141C), Color(0xFF090A0F))
                 )
             )
-            .horizontalScroll(headerScroll)
-            .padding(horizontal = 8.dp, vertical = 3.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        // LEFT: App Branding (HERA + Dual-Synth JUNO-60 / JUPITER-8 Switch + VOICES, and stretched description below) + CRT Oscilloscope
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(7.dp)
-        ) {
+        val naturalHeaderWidthDp = 788f
+        val headerZoom = (maxWidth.value / naturalHeaderWidthDp).coerceIn(0.70f, 1.00f)
+        val zoomedHeaderDensity = remember(baseHeaderDensity.density, baseHeaderDensity.fontScale, headerZoom) {
+            Density(
+                density = baseHeaderDensity.density * headerZoom,
+                fontScale = baseHeaderDensity.fontScale
+            )
+        }
+        val minHeaderRowWidth = with(zoomedHeaderDensity) { constraints.maxWidth.toDp() }
+
+        CompositionLocalProvider(LocalDensity provides zoomedHeaderDensity) {
+            Row(
+                modifier = Modifier
+                    .widthIn(min = minHeaderRowWidth)
+                    .horizontalScroll(headerScroll)
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                // LEFT: App Branding (HERA + Dual-Synth JUNO-60 / JUPITER-8 Switch + VOICES, and stretched description below) + CRT Oscilloscope
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
             AtariCartridgeBadgeIcon(modifier = Modifier.size(30.dp))
 
             Column(verticalArrangement = Arrangement.Center) {
@@ -1949,7 +2348,9 @@ private fun TopHeaderBar(
                         .padding(horizontal = 5.dp, vertical = 2.dp)
                 ) {
                     Box(
+                        contentAlignment = Alignment.Center,
                         modifier = Modifier
+                            .width(27.dp)
                             .clip(RoundedCornerShape(2.dp))
                             .background(if (isMasterMuted) Color(0xFF3B1219) else Color(0xFF1B202E))
                             .clickable {
@@ -1960,14 +2361,16 @@ private fun TopHeaderBar(
                                     onToggleMasterMute()
                                 }
                             }
-                            .padding(horizontal = 3.5.dp, vertical = 1.dp)
+                            .padding(vertical = 1.dp)
                     ) {
                         Text(
                             text = if (isMasterMuted || masterVolume <= 0.001f) "MUTE" else "VOL",
                             color = if (isMasterMuted) Color(0xFFFCA5A5) else Color(0xFF9CA3AF),
                             fontSize = 7.sp,
                             fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.ExtraBold
+                            fontWeight = FontWeight.ExtraBold,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1
                         )
                     }
                     HorizontalTouchStrip(
@@ -1985,13 +2388,21 @@ private fun TopHeaderBar(
                         },
                         onRelease = {}
                     )
-                    Text(
-                        text = "${((if (isMasterMuted) 0f else masterVolume) * 100).roundToInt()}",
-                        color = JunoAmberLed,
-                        fontSize = 8.sp,
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.ExtraBold
-                    )
+                    // Fixed 3-digit width box ("0" .. "100") so the volume button never jumps or resizes dynamically!
+                    Box(
+                        contentAlignment = Alignment.CenterEnd,
+                        modifier = Modifier.width(20.dp)
+                    ) {
+                        Text(
+                            text = "${((if (isMasterMuted) 0f else masterVolume) * 100).roundToInt().coerceIn(0, 100)}",
+                            color = JunoAmberLed,
+                            fontSize = 8.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.ExtraBold,
+                            textAlign = TextAlign.End,
+                            maxLines = 1
+                        )
+                    }
                 }
 
                 // Floating Rounded MIDI Cartridge Overlay (Zero layout shift!)
@@ -2066,6 +2477,8 @@ private fun TopHeaderBar(
                         fontWeight = FontWeight.ExtraBold
                     )
                 }
+            }
+        }
             }
         }
     }
@@ -3402,6 +3815,9 @@ private fun SynthRackSectionCard(
 ) {
     val rev = uiRevision
     val isJupiter8 = (paramState[SynthParam.SynthModel] ?: 0f) >= 0.5f
+    val hElong = LocalFaderHorizElongationState.current.value.coerceIn(1.00f, 1.30f)
+    val vScale = LocalFaderElongationState.current.value.coerceIn(0.50f, 1.00f)
+    val faderRowGap = (7f * hElong).dp
     when (section) {
         MidiSection.LFO -> {
             val manTrigActive = (paramState[SynthParam.LFOManualTrig] ?: 0f) >= 0.5f
@@ -3412,7 +3828,7 @@ private fun SynthRackSectionCard(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy((6f * hElong).dp),
                     modifier = Modifier.fillMaxHeight()
                 ) {
                     if (isJupiter8) {
@@ -3429,12 +3845,12 @@ private fun SynthRackSectionCard(
                     }
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterVertically),
+                        verticalArrangement = Arrangement.spacedBy((5f * vScale).dp, Alignment.CenterVertically),
                         modifier = Modifier.fillMaxHeight()
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(7.dp)
+                            horizontalArrangement = Arrangement.spacedBy(faderRowGap)
                         ) {
                             JunoParamFader(
                                 param = SynthParam.LFORate,
@@ -3465,7 +3881,7 @@ private fun SynthRackSectionCard(
                             activeColor = JunoAmberLed,
                             midiManager = midiManager,
                             uiRevision = rev,
-                            compact = false,
+                            compact = vScale < 0.80f,
                             onToggle = {
                                 onUpdateParam(SynthParam.LFOManualTrig, if (manTrigActive) 0f else 1f)
                             },
@@ -3484,17 +3900,17 @@ private fun SynthRackSectionCard(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    horizontalArrangement = Arrangement.spacedBy(faderRowGap),
                     modifier = Modifier.fillMaxHeight()
                 ) {
                     Column(
-                        verticalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterVertically),
+                        verticalArrangement = Arrangement.spacedBy((4.5f * vScale).dp, Alignment.CenterVertically),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
                             .wrapContentHeight()
                             .background(Color(0xFF0A0D14), RoundedCornerShape(4.dp))
                             .border(1.dp, Color(0xFF1A2232), RoundedCornerShape(4.dp))
-                            .padding(horizontal = 3.dp, vertical = 4.dp)
+                            .padding(horizontal = (3f * hElong).dp, vertical = (3.5f * vScale).dp)
                     ) {
                         SelectorGroupBox(
                             param = SynthParam.DCORange,
@@ -3530,13 +3946,13 @@ private fun SynthRackSectionCard(
 
                     if (isJupiter8) {
                         Column(
-                            verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
+                            verticalArrangement = Arrangement.spacedBy((3.5f * vScale).dp, Alignment.CenterVertically),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier
                                 .wrapContentHeight()
                                 .background(Color(0xFF0A0D14), RoundedCornerShape(4.dp))
                                 .border(1.dp, Color(0xFF1A2232), RoundedCornerShape(4.dp))
-                                .padding(horizontal = 3.dp, vertical = 4.dp)
+                                .padding(horizontal = (3f * hElong).dp, vertical = (3.5f * vScale).dp)
                         ) {
                             SelectorGroupBox(
                                 param = SynthParam.JP8VoiceMode,
@@ -3571,13 +3987,13 @@ private fun SynthRackSectionCard(
                         }
 
                         Column(
-                            verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
+                            verticalArrangement = Arrangement.spacedBy((3.5f * vScale).dp, Alignment.CenterVertically),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier
                                 .wrapContentHeight()
                                 .background(Color(0xFF0A0D14), RoundedCornerShape(4.dp))
                                 .border(1.dp, Color(0xFF1A2232), RoundedCornerShape(4.dp))
-                                .padding(horizontal = 3.dp, vertical = 4.dp)
+                                .padding(horizontal = (3f * hElong).dp, vertical = (3.5f * vScale).dp)
                         ) {
                             SelectorGroupBox(
                                 param = SynthParam.JP8Vco2Range,
@@ -3781,18 +4197,18 @@ private fun SynthRackSectionCard(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    horizontalArrangement = Arrangement.spacedBy(faderRowGap),
                     modifier = Modifier.fillMaxHeight()
                 ) {
                     if (isJupiter8) {
                         Column(
-                            verticalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterVertically),
+                            verticalArrangement = Arrangement.spacedBy((4.5f * vScale).dp, Alignment.CenterVertically),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier
                                 .wrapContentHeight()
                                 .background(Color(0xFF0A0D14), RoundedCornerShape(4.dp))
                                 .border(1.dp, Color(0xFF1A2232), RoundedCornerShape(4.dp))
-                                .padding(horizontal = 3.dp, vertical = 4.dp)
+                                .padding(horizontal = (3f * hElong).dp, vertical = (3.5f * vScale).dp)
                         ) {
                             SelectorGroupBox(
                                 param = SynthParam.JP8VcfSlope,
@@ -3882,7 +4298,7 @@ private fun SynthRackSectionCard(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    horizontalArrangement = Arrangement.spacedBy(faderRowGap),
                     modifier = Modifier.fillMaxHeight()
                 ) {
                     SelectorGroupBox(
@@ -3927,7 +4343,7 @@ private fun SynthRackSectionCard(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    horizontalArrangement = Arrangement.spacedBy(faderRowGap),
                     modifier = Modifier.fillMaxHeight()
                 ) {
                     if (isJupiter8) {
@@ -4034,7 +4450,7 @@ private fun SynthRackSectionCard(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    horizontalArrangement = Arrangement.spacedBy(faderRowGap),
                     modifier = Modifier.fillMaxHeight()
                 ) {
                     JunoChorusButton(
@@ -4068,7 +4484,7 @@ private fun SynthRackSectionCard(
             ) {
                 Column(
                     horizontalAlignment = Alignment.Start,
-                    verticalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterVertically),
+                    verticalArrangement = Arrangement.spacedBy((5f * vScale).dp, Alignment.CenterVertically),
                     modifier = Modifier.fillMaxHeight()
                 ) {
                     JunoTopLeftPowerSwitch(
@@ -4082,7 +4498,7 @@ private fun SynthRackSectionCard(
                     )
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(7.dp)
+                        horizontalArrangement = Arrangement.spacedBy(faderRowGap)
                     ) {
                         JunoParamFader(
                             param = SynthParam.DelayTime,
@@ -4130,7 +4546,7 @@ private fun SynthRackSectionCard(
             ) {
                 Column(
                     horizontalAlignment = Alignment.Start,
-                    verticalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterVertically),
+                    verticalArrangement = Arrangement.spacedBy((5f * vScale).dp, Alignment.CenterVertically),
                     modifier = Modifier.fillMaxHeight()
                 ) {
                     JunoTopLeftPowerSwitch(
@@ -4144,7 +4560,7 @@ private fun SynthRackSectionCard(
                     )
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(7.dp)
+                        horizontalArrangement = Arrangement.spacedBy(faderRowGap)
                     ) {
                         SelectorGroupBox(
                             param = SynthParam.ReverbType,
@@ -4215,6 +4631,9 @@ private fun SynthModuleCard(
     content: @Composable () -> Unit
 ) {
     val elongationState = LocalFaderElongationState.current
+    val horizElongState = LocalFaderHorizElongationState.current
+    val hElong = horizElongState.value.coerceIn(1.00f, 1.30f)
+    val isCompressed = elongationState.value < 0.80f
     // Single-pass custom Layout: measures content() ONCE first to obtain cardWidth, then measures
     // header and footer bars at fixed width cardWidth. Completely eliminates IntrinsicSize.Max double-measurement
     // and reads elongationState.value only during the layout phase (ZERO recompositions during fader animation!).
@@ -4226,13 +4645,13 @@ private fun SynthModuleCard(
         content = {
             // [0] Main Controls Area (measured first to determine card width in a single pass)
             Box(
-                modifier = Modifier.padding(horizontal = 14.dp),
+                modifier = Modifier.padding(horizontal = (14f * hElong).dp),
                 contentAlignment = Alignment.Center
             ) {
                 content()
             }
 
-            // [1] Top Header Block (Top 2dp line + 16dp title bar + 0.8dp hairline)
+            // [1] Top Header Block (Top 2dp line + title bar + 0.8dp hairline)
             Column(modifier = Modifier.fillMaxWidth()) {
                 Box(
                     modifier = Modifier
@@ -4243,7 +4662,7 @@ private fun SynthModuleCard(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(16.dp)
+                        .height(if (isCompressed) 13.5.dp else 16.dp)
                         .background(accentColor.copy(alpha = 0.18f))
                         .padding(horizontal = 4.dp),
                     contentAlignment = Alignment.Center
@@ -4256,7 +4675,7 @@ private fun SynthModuleCard(
                         Text(
                             text = title,
                             color = accentColor,
-                            fontSize = 6.8.sp,
+                            fontSize = if (isCompressed) 6.2.sp else 6.8.sp,
                             lineHeight = 7.sp,
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Black,
@@ -4320,7 +4739,7 @@ private fun SynthModuleCard(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(12.dp)
+                            .height(if (isCompressed) 9.5.dp else 12.dp)
                             .background(Color(0xFF080A0F))
                             .padding(horizontal = 3.dp),
                         contentAlignment = Alignment.Center
@@ -4328,7 +4747,7 @@ private fun SynthModuleCard(
                         Text(
                             text = footer,
                             color = Color(0xFF9CA3AF),
-                            fontSize = 5.5.sp,
+                            fontSize = if (isCompressed) 5.sp else 5.5.sp,
                             lineHeight = 6.sp,
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.SemiBold,
@@ -4346,13 +4765,13 @@ private fun SynthModuleCard(
                 )
             }
         }
-    ) { measurables, _ ->
-        val elong = elongationState.value.coerceIn(0.82f, 2.15f)
+    ) { measurables, constraints ->
+        val elong = elongationState.value.coerceIn(0.50f, 2.15f)
         val totalH = (224f * elong).dp.roundToPx()
-        val headerEstH = 19.dp.roundToPx()
-        val footerEstH = 15.dp.roundToPx()
-        val padV = (4f * elong.coerceAtMost(1.30f)).dp.roundToPx()
-        val contentMaxH = (totalH - headerEstH - footerEstH - padV * 2).coerceAtLeast(40)
+        val headerEstH = (if (elong < 0.80f) 16.dp else 19.dp).roundToPx()
+        val footerEstH = (if (elong < 0.80f) 12.dp else 15.dp).roundToPx()
+        val padV = (4f * elong.coerceIn(0.45f, 1.30f)).dp.roundToPx()
+        val contentMaxH = (totalH - headerEstH - footerEstH - padV * 2).coerceAtLeast(36)
 
         // 1. Measure content once with unconstrained width to get natural card width
         val contentPlaceable = measurables[0].measure(
@@ -4363,7 +4782,7 @@ private fun SynthModuleCard(
                 maxHeight = contentMaxH
             )
         )
-        val cardW = contentPlaceable.width.coerceAtLeast(64.dp.roundToPx())
+        val cardW = maxOf(contentPlaceable.width, constraints.minWidth, 64.dp.roundToPx())
 
         // 2. Measure header and footer at exact cardW
         val fixedWConstraints = Constraints(
@@ -4412,23 +4831,26 @@ private fun JunoParamFader(
     val isLearnMode = midiManager.isMidiLearnActive
     val isSelectedTarget = isLearnMode && midiManager.learningTargetKey == param.key
     val elongationState = LocalFaderElongationState.current
+    val horizElongState = LocalFaderHorizElongationState.current
+    val isFlattenedFader = elongationState.value < 0.80f
 
     Box(
         contentAlignment = Alignment.TopCenter,
         modifier = Modifier
-            .width(42.dp)
             .layout { measurable, constraints ->
-                val elong = elongationState.value.coerceIn(0.82f, 2.15f)
+                val hElong = horizElongState.value.coerceIn(1.00f, 1.30f)
+                val targetW = (42f * hElong).dp.roundToPx()
+                val elong = elongationState.value.coerceIn(0.50f, 2.15f)
                 val faderScale = if (elong >= 1f) {
                     1f + (elong - 1f) * 1.22f
                 } else {
-                    elong
+                    (0.46f + (elong - 0.50f) * 1.08f).coerceIn(0.46f, 1.0f)
                 }
                 val targetH = (faderHeight.value * faderScale).dp.roundToPx()
                 val placeable = measurable.measure(
-                    constraints.copy(minHeight = targetH, maxHeight = targetH)
+                    constraints.copy(minWidth = targetW, maxWidth = targetW, minHeight = targetH, maxHeight = targetH)
                 )
-                layout(placeable.width, targetH) {
+                layout(targetW, targetH) {
                     placeable.placeRelative(0, 0)
                 }
             }
@@ -4455,13 +4877,19 @@ private fun JunoParamFader(
                     midiManager.learningTargetKey = param.key
                     onNotifyUiChanged()
                 }
-                .padding(top = 2.5.dp, bottom = 4.5.dp, start = 2.dp, end = 2.dp)
+                .padding(
+                    top = if (isFlattenedFader) 1.5.dp else 2.5.dp,
+                    bottom = if (isFlattenedFader) 2.dp else 4.5.dp,
+                    start = 2.dp,
+                    end = 2.dp
+                )
         ) {
             // Parameter Title Label (Fixed position at top of slot)
             Text(
                 text = param.label,
                 color = Color(0xFFE5E7EB),
-                fontSize = 7.5.sp,
+                fontSize = if (isFlattenedFader) 6.5.sp else 7.5.sp,
+                lineHeight = if (isFlattenedFader) 6.8.sp else 8.sp,
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.ExtraBold,
                 maxLines = 1
@@ -4506,30 +4934,35 @@ private fun JunoParamFader(
             ) {
                 // Left Scale Labels: Refines into a 5-point studio console scale (100/75/50/25/0) when elongated on Tablets/DeX
                 val showDetailedScale = elongationState.value >= 1.22f
+                val showMidScale = elongationState.value >= 0.62f
                 Column(
                     modifier = Modifier
                         .align(Alignment.CenterStart)
                         .fillMaxHeight()
-                        .padding(vertical = 6.dp, horizontal = 1.dp),
+                        .padding(vertical = if (isFlattenedFader) 3.dp else 6.dp, horizontal = 1.dp),
                     verticalArrangement = Arrangement.SpaceBetween,
                     horizontalAlignment = Alignment.End
                 ) {
-                    Text("100", color = Color(0xFF6B7280), fontSize = 5.sp, fontFamily = FontFamily.Monospace)
+                    Text("100", color = Color(0xFF6B7280), fontSize = if (isFlattenedFader) 4.4.sp else 5.sp, fontFamily = FontFamily.Monospace)
                     if (showDetailedScale) {
                         Text("75", color = Color(0xFF4B5563), fontSize = 4.6.sp, fontFamily = FontFamily.Monospace)
                     }
-                    Text("50", color = Color(0xFF6B7280), fontSize = 5.sp, fontFamily = FontFamily.Monospace)
+                    if (showMidScale) {
+                        Text("50", color = Color(0xFF6B7280), fontSize = if (isFlattenedFader) 4.4.sp else 5.sp, fontFamily = FontFamily.Monospace)
+                    }
                     if (showDetailedScale) {
                         Text("25", color = Color(0xFF4B5563), fontSize = 4.6.sp, fontFamily = FontFamily.Monospace)
                     }
-                    Text("0", color = Color(0xFF6B7280), fontSize = 5.sp, fontFamily = FontFamily.Monospace)
+                    Text("0", color = Color(0xFF6B7280), fontSize = if (isFlattenedFader) 4.4.sp else 5.sp, fontFamily = FontFamily.Monospace)
                 }
 
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val w = size.width
                     val h = size.height
-                    val padY = 8.dp.toPx()
-                    val usableH = (h - padY * 2f).coerceAtLeast(10f)
+                    val hElong = horizElongState.value.coerceIn(1.00f, 1.30f)
+                    val isCompactTrack = h < 66.dp.toPx()
+                    val padY = if (isCompactTrack) 4.5.dp.toPx() else 8.dp.toPx()
+                    val usableH = (h - padY * 2f).coerceAtLeast(8f)
                     val centerX = w * 0.52f
                     val isLongThrow = usableH >= 135.dp.toPx()
 
@@ -4579,11 +5012,11 @@ private fun JunoParamFader(
                         cornerRadius = CornerRadius(trackW * 0.5f, trackW * 0.5f)
                     )
 
-                    // Ribbed Colored Juno Fader Cap
+                    // Ribbed Colored Juno Fader Cap (scales horizontally with hElong and vertically when flattened)
                     val norm = currentVal.coerceIn(0f, 1f)
                     val capY = padY + usableH * (1f - norm)
-                    val capW = 21.dp.toPx()
-                    val capH = 12.dp.toPx()
+                    val capW = (21f * hElong).dp.toPx()
+                    val capH = if (isCompactTrack) 9.dp.toPx() else 12.dp.toPx()
 
                     drawRoundRect(
                         color = capColor,
@@ -4592,18 +5025,20 @@ private fun JunoParamFader(
                         cornerRadius = CornerRadius(3.dp.toPx(), 3.dp.toPx())
                     )
                     // Subtle top/bottom tactile grip ribs on fader cap
-                    drawLine(
-                        color = Color(0x28000000),
-                        start = Offset(centerX - capW * 0.36f, capY - 2.8.dp.toPx()),
-                        end = Offset(centerX + capW * 0.36f, capY - 2.8.dp.toPx()),
-                        strokeWidth = 1f
-                    )
-                    drawLine(
-                        color = Color(0x28000000),
-                        start = Offset(centerX - capW * 0.36f, capY + 2.8.dp.toPx()),
-                        end = Offset(centerX + capW * 0.36f, capY + 2.8.dp.toPx()),
-                        strokeWidth = 1f
-                    )
+                    if (!isCompactTrack) {
+                        drawLine(
+                            color = Color(0x28000000),
+                            start = Offset(centerX - capW * 0.36f, capY - 2.8.dp.toPx()),
+                            end = Offset(centerX + capW * 0.36f, capY - 2.8.dp.toPx()),
+                            strokeWidth = 1f
+                        )
+                        drawLine(
+                            color = Color(0x28000000),
+                            start = Offset(centerX - capW * 0.36f, capY + 2.8.dp.toPx()),
+                            end = Offset(centerX + capW * 0.36f, capY + 2.8.dp.toPx()),
+                            strokeWidth = 1f
+                        )
+                    }
                     // Subtle highlight border on fader cap
                     drawRoundRect(
                         color = Color(0x44FFFFFF),
@@ -4622,14 +5057,14 @@ private fun JunoParamFader(
                 }
             }
 
-            Spacer(modifier = Modifier.height(3.5.dp))
+            Spacer(modifier = Modifier.height(if (isFlattenedFader) 1.5.dp else 3.5.dp))
 
             // Compact Low-Profile Digital Readout Box at bottom (0 .. 100) with minimal top/bottom padding and separated from fader & bottom border
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
                     .widthIn(min = 21.dp)
-                    .height(12.dp)
+                    .height(if (isFlattenedFader) 10.dp else 12.dp)
                     .background(Color(0xFF07090D), RoundedCornerShape(2.dp))
                     .border(0.8.dp, Color(0xFF1B2230), RoundedCornerShape(2.dp))
                     .padding(horizontal = 3.dp)
@@ -4637,8 +5072,8 @@ private fun JunoParamFader(
                 Text(
                     text = "${(value * 100f).roundToInt().coerceIn(0, 100)}",
                     color = JunoAmberLed,
-                    fontSize = 7.sp,
-                    lineHeight = 7.sp,
+                    fontSize = if (isFlattenedFader) 6.2.sp else 7.sp,
+                    lineHeight = if (isFlattenedFader) 6.2.sp else 7.sp,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center,
@@ -4775,18 +5210,21 @@ private fun JunoChorusButton(
     val isLearnMode = midiManager.isMidiLearnActive
     val isWaiting = isLearnMode && midiManager.learningTargetKey == param.key
 
+    val hElong = LocalFaderHorizElongationState.current.value.coerceIn(1.00f, 1.30f)
+    val vScale = LocalFaderElongationState.current.value.coerceIn(0.50f, 1.00f)
+
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
-            .width(38.dp)
+            .width((38f * hElong).dp)
             .fillMaxHeight()
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween,
             modifier = Modifier
-                .width(36.dp)
-                .height(56.dp)
+                .width((36f * hElong).dp)
+                .height((56f * vScale.coerceAtLeast(0.62f)).dp)
                 .clip(RoundedCornerShape(4.dp))
                 .background(
                     when {
@@ -4813,12 +5251,12 @@ private fun JunoChorusButton(
                         onToggle()
                     }
                 }
-                .padding(vertical = 6.dp, horizontal = 4.dp)
+                .padding(vertical = (6f * vScale).dp, horizontal = 4.dp)
         ) {
             // Square LED Indicator Lens
             Box(
                 modifier = Modifier
-                    .size(10.dp)
+                    .size((10f * vScale.coerceAtLeast(0.68f)).dp)
                     .clip(RoundedCornerShape(2.dp))
                     .background(if (active) JunoAmberLed else Color(0xFF090B10))
                     .border(
@@ -4831,7 +5269,7 @@ private fun JunoChorusButton(
             Text(
                 text = romanLabel,
                 color = Color(0xFFF3F4F6),
-                fontSize = 12.sp,
+                fontSize = (12f * vScale.coerceAtLeast(0.72f)).sp,
                 fontWeight = FontWeight.Black
             )
             // Tactile bevel line
@@ -4970,6 +5408,9 @@ private fun JunoTopLeftPowerSwitch(
     val isLearnMode = midiManager.isMidiLearnActive
     val isWaiting = isLearnMode && midiManager.learningTargetKey == param.key
 
+    val hElong = LocalFaderHorizElongationState.current.value.coerceIn(1.00f, 1.30f)
+    val vScale = LocalFaderElongationState.current.value.coerceIn(0.50f, 1.00f)
+
     Box(contentAlignment = Alignment.Center) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -4992,7 +5433,7 @@ private fun JunoTopLeftPowerSwitch(
                     midiManager.learningTargetKey = param.key
                     onNotifyUiChanged()
                 }
-                .padding(horizontal = 2.5.dp, vertical = 2.dp)
+                .padding(horizontal = (2.5f * hElong).dp, vertical = (2f * vScale).dp)
         ) {
             val options = listOf("OFF" to false, "ON" to true)
             for ((label, isOnOpt) in options) {
@@ -5000,8 +5441,8 @@ private fun JunoTopLeftPowerSwitch(
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier
-                        .width(26.dp)
-                        .height(13.dp)
+                        .width((26f * hElong).dp)
+                        .height((13f * vScale.coerceAtLeast(0.68f)).dp)
                         .clip(RoundedCornerShape(2.dp))
                         .background(
                             when {
@@ -5031,8 +5472,8 @@ private fun JunoTopLeftPowerSwitch(
                     Text(
                         text = label,
                         color = if (isSel) Color.White else Color(0xFF9CA3AF),
-                        fontSize = 6.5.sp,
-                        lineHeight = 6.5.sp,
+                        fontSize = (6.5f * vScale.coerceAtLeast(0.75f)).sp,
+                        lineHeight = (6.5f * vScale.coerceAtLeast(0.75f)).sp,
                         fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.Black,
                         style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false))
@@ -5077,11 +5518,13 @@ private fun SelectorGroupBox(
     val mappedCh = remember(revIgnore, param) { midiManager.getMappedChannel(param.key) }
     val isLearnMode = midiManager.isMidiLearnActive
     val isWaiting = isLearnMode && midiManager.learningTargetKey == param.key
+    val hElong = LocalFaderHorizElongationState.current.value.coerceIn(1.00f, 1.30f)
+    val vScale = LocalFaderElongationState.current.value.coerceIn(0.50f, 1.00f)
 
     Box(contentAlignment = Alignment.TopCenter) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(1.dp),
+            verticalArrangement = Arrangement.spacedBy((1f * vScale).dp),
             modifier = Modifier
                 .background(
                     if (isWaiting) Color(0xFF0A2236) else Color(0xFF0D1017),
@@ -5100,23 +5543,24 @@ private fun SelectorGroupBox(
                     midiManager.learningTargetKey = param.key
                     onNotifyUiChanged()
                 }
-                .padding(horizontal = 2.5.dp, vertical = 1.dp)
+                .padding(horizontal = (2.5f * hElong).dp, vertical = (1f * vScale).dp)
         ) {
             Text(
                 text = title,
                 color = Color(0xFF9CA3AF),
-                fontSize = 6.2.sp,
-                lineHeight = 6.5.sp,
+                fontSize = (6.2f * vScale.coerceAtLeast(0.70f)).sp,
+                lineHeight = (6.5f * vScale.coerceAtLeast(0.70f)).sp,
                 fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false))
             )
             for (i in options.indices) {
                 val isSel = i == selectedIndex
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier
-                        .width(30.dp)
-                        .height(12.5.dp)
+                        .width((30f * hElong).dp)
+                        .height((12.5f * vScale).dp)
                         .clip(RoundedCornerShape(2.dp))
                         .background(if (isSel) Color(0xFFF59E0B) else Color(0xFF171B26))
                         .border(
@@ -5136,10 +5580,11 @@ private fun SelectorGroupBox(
                     Text(
                         text = options[i],
                         color = if (isSel) Color.Black else Color(0xFF9CA3AF),
-                        fontSize = 6.5.sp,
-                        lineHeight = 6.5.sp,
+                        fontSize = (6.5f * vScale.coerceAtLeast(0.72f)).sp,
+                        lineHeight = (6.5f * vScale.coerceAtLeast(0.72f)).sp,
                         fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.Black
+                        fontWeight = FontWeight.Black,
+                        style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false))
                     )
                 }
             }
