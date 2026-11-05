@@ -215,6 +215,26 @@ export const HeraApp: React.FC = () => {
     return () => window.clearTimeout(t);
   }, [isArpSectionOpen, isKeyboardOpen]);
 
+  const [isKeyboardFocusMode, setIsKeyboardFocusMode] = useState<boolean>(false);
+  const isKeyboardFocusModeRef = useRef<boolean>(false);
+  useEffect(() => {
+    isKeyboardFocusModeRef.current = isKeyboardFocusMode;
+  }, [isKeyboardFocusMode]);
+
+  const rawAspectRatio = viewportSize.height > 0 ? viewportSize.width / viewportSize.height : 1.77;
+  const isPhoneWidescreen = rawAspectRatio >= 1.9 && viewportSize.height < 430 && viewportSize.width < 940;
+  const canCompactFadersWithKeyboard = !isPhoneWidescreen && viewportSize.height >= 320;
+  const canCompactRef = useRef<boolean>(canCompactFadersWithKeyboard);
+  const isKeyboardOpenRef = useRef<boolean>(isKeyboardOpen);
+  useEffect(() => {
+    canCompactRef.current = canCompactFadersWithKeyboard;
+    isKeyboardOpenRef.current = isKeyboardOpen;
+    if (!isKeyboardOpen || !canCompactFadersWithKeyboard) {
+      setIsKeyboardFocusMode(false);
+    }
+  }, [isKeyboardOpen, canCompactFadersWithKeyboard]);
+
+  // Delicate, Silky Soft Magnetic Edge Snap + Mandatory Main Header Safeguard + Universal Mouse Click-and-Drag Scroll
   useEffect(() => {
     let snapTimer: number | null = null;
     let rafId: number | null = null;
@@ -238,7 +258,7 @@ export const HeraApp: React.FC = () => {
       if (Math.abs(delta) < 1.5) return;
 
       isAutoSnappingRef.current = true;
-      const durationMs = 420;
+      const durationMs = 380;
       const startTime = performance.now();
 
       // Delicate ease-out quintic/cubic damper curve
@@ -283,22 +303,51 @@ export const HeraApp: React.FC = () => {
         const vh = window.innerHeight;
         const docH = document.documentElement.scrollHeight;
         const maxScroll = Math.max(0, docH - vh);
+        const headerH = topHeaderRef.current?.offsetHeight || 54;
+
+        // Two-View Compacted Faders + Keyboard Mode across resolutions:
+        if (canCompactRef.current && isKeyboardOpenRef.current) {
+          const downTriggerPx = Math.max(12, Math.min(44, headerH * 0.22));
+          const upTriggerPx = Math.max(downTriggerPx + 6, headerH * 0.85);
+          if (!isKeyboardFocusModeRef.current && scrollY >= downTriggerPx) {
+            setIsKeyboardFocusMode(true);
+            startSilkyMagneticGlide(headerH);
+            return;
+          }
+          // Mandatory Main Header Safeguard: whenever scrolling up and the Main Header appears,
+          // immediately exit Keyboard Focus Mode and snap to 0 so ONLY [Header + Faders + Presets] appear!
+          if (isKeyboardFocusModeRef.current && scrollY <= upTriggerPx) {
+            setIsKeyboardFocusMode(false);
+            startSilkyMagneticGlide(0);
+            return;
+          }
+          if (!isKeyboardFocusModeRef.current && scrollY > 1 && scrollY < downTriggerPx) {
+            startSilkyMagneticGlide(0);
+            return;
+          }
+          if (isKeyboardFocusModeRef.current && Math.abs(scrollY - headerH) > 2) {
+            startSilkyMagneticGlide(Math.min(headerH, maxScroll));
+            return;
+          }
+        }
+
         if (maxScroll <= 6) return;
 
-        const magnetZone = Math.min(115, Math.max(24, maxScroll * 0.28));
-
-        // Near Top Edge -> Magnetize delicately to Area of Interest 1 (0px)
-        if (scrollY > 2 && scrollY <= magnetZone) {
+        // Mandatory Main Header Safeguard on all other states:
+        // If any part of the Main Header is visible on release (scrollY < headerH), snap to 0 (Header + Faders + Presets only)
+        const magnetTopZone = Math.max(headerH, Math.min(130, Math.max(24, maxScroll * 0.30)));
+        if (scrollY > 1 && scrollY <= magnetTopZone) {
           startSilkyMagneticGlide(0);
           return;
         }
 
-        // Near Bottom Edge -> Magnetize delicately to Area of Interest 2 (Voicing at top + Arp/Keyboard at bottom)
+        // Near Bottom Edge -> Magnetize delicately to Area of Interest 2
+        const magnetBottomZone = Math.min(130, Math.max(24, maxScroll * 0.28));
         const distFromBottom = maxScroll - scrollY;
-        if (distFromBottom > 2 && distFromBottom <= magnetZone) {
+        if (distFromBottom > 1 && distFromBottom <= magnetBottomZone) {
           startSilkyMagneticGlide(maxScroll);
         }
-      }, 95);
+      }, 75);
     };
 
     const onPointerUp = () => {
@@ -314,8 +363,131 @@ export const HeraApp: React.FC = () => {
     };
 
     const onScroll = () => {
+      const headerH = topHeaderRef.current?.offsetHeight || 54;
+      // Real-time Mandatory Main Header Safeguard during upward scroll:
+      if (isKeyboardFocusModeRef.current && window.scrollY <= headerH * 0.85) {
+        setIsKeyboardFocusMode(false);
+      } else if (
+        !isKeyboardFocusModeRef.current &&
+        canCompactRef.current &&
+        isKeyboardOpenRef.current &&
+        window.scrollY >= headerH * 0.32
+      ) {
+        setIsKeyboardFocusMode(true);
+      }
       if (!isPointerDownRef.current && !isAutoSnappingRef.current && !isDrawerAnimatingRef.current) {
         triggerEdgeMagnetCheck();
+      }
+    };
+
+    // Universal Mouse Click-and-Drag Scrolling (Header, Presets Footer, Arpeggiator, Preset Grid, Synth Rack, and Vertical Page Scroll)
+    let isMouseDown = false;
+    let isMouseDragging = false;
+    let startX = 0;
+    let startY = 0;
+    let lastX = 0;
+    let lastY = 0;
+    let activeHorizEl: HTMLElement | null = null;
+    let activeHorizZoom = 1;
+    let activeVertEl: HTMLElement | null = null;
+
+    const findScrollableAncestors = (target: HTMLElement | null) => {
+      let horiz: HTMLElement | null = null;
+      let horizZoom = 1;
+      let vert: HTMLElement | null = null;
+      let el = target;
+      while (el && el !== document.body && el !== document.documentElement) {
+        const style = window.getComputedStyle(el);
+        if (!horiz) {
+          const ox = style.overflowX;
+          if ((ox === 'auto' || ox === 'scroll') && el.scrollWidth > el.clientWidth + 1) {
+            horiz = el;
+            const z = parseFloat((el.style as any).zoom || '1');
+            horizZoom = !isNaN(z) && z > 0 ? z : 1;
+          }
+        }
+        if (!vert) {
+          const oy = style.overflowY;
+          if ((oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 1) {
+            vert = el;
+          }
+        }
+        el = el.parentElement;
+      }
+      return { horiz, horizZoom, vert };
+    };
+
+    const suppressClickAfterDrag = (ev: MouseEvent) => {
+      ev.stopPropagation();
+      ev.preventDefault();
+    };
+
+    const onMouseDownDragScroll = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      // Do not intercept dedicated drag controls (Faders, Range sliders, Text inputs, Selects, Wheels, Piano Keys)
+      if (
+        target.closest(
+          'input, select, textarea, [data-no-drag-scroll="true"]'
+        )
+      ) {
+        return;
+      }
+      const { horiz, horizZoom, vert } = findScrollableAncestors(target);
+      isMouseDown = true;
+      isMouseDragging = false;
+      startX = e.clientX;
+      startY = e.clientY;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      activeHorizEl = horiz;
+      activeHorizZoom = horizZoom;
+      activeVertEl = vert;
+    };
+
+    const onMouseMoveDragScroll = (e: MouseEvent) => {
+      if (!isMouseDown) return;
+      const totalDx = e.clientX - startX;
+      const totalDy = e.clientY - startY;
+      if (!isMouseDragging && Math.hypot(totalDx, totalDy) > 4.5) {
+        isMouseDragging = true;
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = 'grabbing';
+      }
+      if (isMouseDragging) {
+        e.preventDefault();
+        const stepDx = e.clientX - lastX;
+        const stepDy = e.clientY - lastY;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        if (activeHorizEl && stepDx !== 0) {
+          activeHorizEl.scrollLeft -= stepDx / activeHorizZoom;
+        }
+        if (stepDy !== 0) {
+          if (activeVertEl) {
+            activeVertEl.scrollTop -= stepDy;
+          } else {
+            window.scrollBy(0, -stepDy);
+          }
+        }
+      }
+    };
+
+    const onMouseUpDragScroll = () => {
+      if (!isMouseDown) return;
+      const wasDragging = isMouseDragging;
+      isMouseDown = false;
+      isMouseDragging = false;
+      activeHorizEl = null;
+      activeVertEl = null;
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+      if (wasDragging) {
+        window.addEventListener('click', suppressClickAfterDrag, {
+          capture: true,
+          once: true,
+        });
       }
     };
 
@@ -325,6 +497,9 @@ export const HeraApp: React.FC = () => {
     window.addEventListener('touchend', onPointerUp, { passive: true });
     window.addEventListener('wheel', onWheel, { passive: true });
     window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('mousedown', onMouseDownDragScroll, { capture: true });
+    window.addEventListener('mousemove', onMouseMoveDragScroll, { passive: false });
+    window.addEventListener('mouseup', onMouseUpDragScroll, { capture: true });
 
     return () => {
       cancelMagneticGlide();
@@ -334,44 +509,22 @@ export const HeraApp: React.FC = () => {
       window.removeEventListener('touchend', onPointerUp);
       window.removeEventListener('wheel', onWheel);
       window.removeEventListener('scroll', onScroll);
+      window.removeEventListener('mousedown', onMouseDownDragScroll, { capture: true });
+      window.removeEventListener('mousemove', onMouseMoveDragScroll);
+      window.removeEventListener('mouseup', onMouseUpDragScroll, { capture: true });
     };
   }, []);
-
-  const [isKeyboardFocusMode, setIsKeyboardFocusMode] = useState<boolean>(false);
-  const isLargeScreenOrDex = viewportSize.width >= 900 && viewportSize.height >= 500;
-
-  useEffect(() => {
-    if (!isKeyboardOpen || !isLargeScreenOrDex) {
-      setIsKeyboardFocusMode(false);
-    }
-  }, [isKeyboardOpen, isLargeScreenOrDex]);
-
-  useEffect(() => {
-    if (!isLargeScreenOrDex || !isKeyboardOpen) return;
-    const onScrollModeCheck = () => {
-      const headerH = topHeaderRef.current?.offsetHeight || 54;
-      if (window.scrollY >= headerH * 0.35 && !isKeyboardFocusMode) {
-        setIsKeyboardFocusMode(true);
-      } else if (window.scrollY <= headerH * 0.2 && isKeyboardFocusMode) {
-        setIsKeyboardFocusMode(false);
-      }
-    };
-    window.addEventListener('scroll', onScrollModeCheck, { passive: true });
-    return () => window.removeEventListener('scroll', onScrollModeCheck);
-  }, [isLargeScreenOrDex, isKeyboardOpen, isKeyboardFocusMode]);
 
   const { faderElongation, faderHorizElongation, headerZoomFactor, rackZoomFactor, isWidescreenFrame } = (() => {
     const vw = viewportSize.width;
     const vh = viewportSize.height;
-    const aspect = vh > 0 ? vw / vh : 1.77;
 
     const headerH = topHeaderRef.current?.offsetHeight || 54;
     const voicingBarH = presetBarRef.current?.offsetHeight || 56;
-    const arpAllowance = isArpSectionOpen && !isKeyboardOpen ? 44 : 0;
     const baseRackH = 268;
 
     // Proportional Header Zoom (0.70 .. 1.00 — max 30% reduction so all header items fit on one screen)
-    const naturalHeaderW = 1160;
+    const naturalHeaderW = 1180;
     const computedHeaderZoom = Math.min(1.0, Math.max(0.7, vw / naturalHeaderW));
 
     // Horizontal Elongation of Fader Sections (1.00 .. 1.30 — ONLY elongation up to +30%, NEVER compression < 1.00)
@@ -392,28 +545,25 @@ export const HeraApp: React.FC = () => {
     const computedHorizElong = Math.min(1.3, Math.max(1.0, rawHorizElong));
 
     // Vertical Fader Adaptation:
-    // - In Large-Screen Keyboard Focus Mode (View 2): flatten faders up to 50% (0.50 .. 0.85) so
+    // - In Keyboard Focus Mode (View 2): flatten faders up to 50% (0.50 .. 0.90) so
     //   Flattened Faders + 8px Spacer + Presets + Arpeggiator + Ergonomic Keyboard fit 100% simultaneously!
-    // - Otherwise (View 1 or Smartphones): 0.82 .. 2.15
+    // - MANDATORY MAIN HEADER SAFEGUARD (View 1, !isKeyboardFocusMode):
+    //   Whenever the Main Header is active, ONLY [Header + Faders + Presets Footer] fill 100% of the screen height (0px of Arp/Keyboard visible).
     let elongation = 1.0;
-    if (isLargeScreenOrDex && isKeyboardOpen && isKeyboardFocusMode) {
-      const kbH = keyboardSectionRef.current?.offsetHeight || Math.min(250, Math.max(185, vh * 0.41));
-      const arpOpenH = isArpSectionOpen ? 48 : 0;
-      const availableForCompressedRack = vh - voicingBarH - arpOpenH - kbH - 28;
-      elongation = Math.min(0.88, Math.max(0.5, availableForCompressedRack / baseRackH));
+    if (canCompactFadersWithKeyboard && isKeyboardOpen && isKeyboardFocusMode) {
+      const kbH = keyboardSectionRef.current?.offsetHeight || Math.min(220, Math.max(165, vh * 0.38));
+      const arpOpenH = isArpSectionOpen ? 46 : 0;
+      const availableForCompressedRack = vh - voicingBarH - arpOpenH - kbH - 22;
+      elongation = Math.min(0.9, Math.max(0.5, availableForCompressedRack / baseRackH));
     } else {
-      const nonRackArea1H = headerH + voicingBarH + arpAllowance + 16;
+      const nonRackArea1H = headerH + voicingBarH + 14;
       const availableForRack = Math.max(baseRackH * 0.82, vh - nonRackArea1H);
       const rawElongation = availableForRack / baseRackH;
-      elongation = Math.min(2.15, Math.max(0.82, rawElongation));
+      elongation = Math.min(4.0, Math.max(0.82, rawElongation));
     }
 
-    const maxArea1H = headerH + voicingBarH + 16 + baseRackH * 2.15 + 24;
-    const widescreenFit =
-      aspect >= 1.25 &&
-      vh <= maxArea1H &&
-      (!isArpSectionOpen || isKeyboardOpen) &&
-      !(isLargeScreenOrDex && isKeyboardOpen && isKeyboardFocusMode);
+    // Whenever the Main Header is active (!isKeyboardFocusMode), enforce 100dvh on Area 1 so ONLY [Header + Faders + Presets Footer] appear!
+    const widescreenFit = !(canCompactFadersWithKeyboard && isKeyboardOpen && isKeyboardFocusMode);
 
     return {
       faderElongation: elongation,
@@ -2138,11 +2288,11 @@ export const HeraApp: React.FC = () => {
 
           {/* Area of Interest 1: Top Header + Faders Section + Voicing Bar (100% fit on widescreen) */}
           <div className={`flex flex-col ${isWidescreenFrame ? 'min-h-[calc(100dvh-4px)] justify-between' : ''}`}>
-          {/* Top Roland Header Bar (Proportional Zoom up to 30% + Horizontal Drag if narrower than 70%) */}
+          {/* Top Roland Header Bar (Proportional Zoom up to 30% + Horizontal Mouse/Touch Drag if narrower than 70%) */}
           <div
             ref={topHeaderRef}
             style={{ zoom: headerZoomFactor }}
-            className="bg-gradient-to-r from-zinc-950 via-zinc-900 to-zinc-950 px-2 sm:px-4 py-1 sm:py-1.5 border-b-2 border-zinc-700 flex flex-nowrap overflow-x-auto scrollbar-none items-center justify-between gap-2"
+            className="bg-gradient-to-r from-zinc-950 via-zinc-900 to-zinc-950 px-2 sm:px-4 py-1 sm:py-1.5 border-b-2 border-zinc-700 flex flex-nowrap overflow-x-auto scrollbar-none items-center justify-between gap-2 cursor-grab active:cursor-grabbing"
           >
             {/* Branding / Badge + Dual-Synth Selector */}
             <div className="flex items-center gap-2.5">
@@ -2844,7 +2994,7 @@ export const HeraApp: React.FC = () => {
             }
             className="bg-zinc-900 px-1 py-1 sm:py-1.5 border-b border-zinc-800 w-full flex-1 flex flex-col justify-center transition-all duration-300"
           >
-            <div className="w-full overflow-x-auto pt-3 pb-1 scrollbar-thin">
+            <div className="w-full overflow-x-auto pt-3 pb-1 scrollbar-thin cursor-grab active:cursor-grabbing">
               <div
                 style={{ zoom: rackZoomFactor }}
                 className="min-w-max w-fit flex flex-row items-stretch justify-start gap-1.5 sm:gap-2 px-2 mx-auto"
@@ -2854,8 +3004,8 @@ export const HeraApp: React.FC = () => {
             </div>
           </div>
 
-          {/* Breathing space between Faders and Strings (Voicing Bar) in Large-Screen Keyboard Focus Mode */}
-          {isLargeScreenOrDex && isKeyboardOpen && isKeyboardFocusMode && (
+          {/* Breathing space between Faders and Strings (Voicing Bar) in Keyboard Focus Mode */}
+          {canCompactFadersWithKeyboard && isKeyboardOpen && isKeyboardFocusMode && (
             <div className="h-2 w-full bg-zinc-950 transition-all duration-300" />
           )}
 

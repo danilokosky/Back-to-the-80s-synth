@@ -401,10 +401,10 @@ export const PresetManager: React.FC<PresetManagerProps> = ({
     <div
       className={`flex flex-col bg-zinc-900 border border-zinc-700/80 rounded-lg px-3 py-2.5 shadow-md transition-all ${className}`}
     >
-      {/* Top Header Row (Comfortable thickness, BANK/PATCH/PRESET NAME titles above, centered LED digits) */}
-      <div className="flex flex-wrap items-center justify-between gap-2.5">
+      {/* Top Header Row (Comfortable thickness, BANK/PATCH/PRESET NAME titles above, centered LED digits, supports horizontal mouse click-and-drag scroll) */}
+      <div className="flex flex-nowrap overflow-x-auto scrollbar-none items-center justify-between gap-2.5 cursor-grab active:cursor-grabbing">
         {/* Authentic Roland 7-Segment LED Bezel Slot Display (Also mappable as Custom Program in MIDI Learn) */}
-        <div className="relative flex items-center">
+        <div className="relative flex items-center flex-shrink-0">
           <MidiLearnBadge
             isMidiLearnActive={isMidiLearnActive}
             isSelectedForLearn={selectedLearnAction === 'selectPreset'}
@@ -522,7 +522,7 @@ export const PresetManager: React.FC<PresetManagerProps> = ({
         )}
 
         {/* Action Controls & Navigation */}
-        <div className="flex flex-wrap items-center gap-1.5 ml-auto">
+        <div className="flex flex-nowrap items-center gap-1.5 ml-auto flex-shrink-0">
           {/* Previous Preset Button (Mappable via MIDI) */}
           <div className="relative flex flex-col items-center">
             <MidiLearnBadge

@@ -275,6 +275,7 @@ export const Slider: React.FC<SliderProps> = ({
       {/* Fader Touch Target Container with vertical clearances so cap never encroaches on title */}
       <div
         ref={faderAreaRef}
+        data-no-drag-scroll="true"
         onPointerDown={handlePointerDown}
         onPointerUp={handlePointerUp}
         style={{

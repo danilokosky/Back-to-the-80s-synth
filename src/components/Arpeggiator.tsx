@@ -99,9 +99,9 @@ export const Arpeggiator: React.FC<ArpeggiatorProps> = ({
       aria-hidden={!isOpen}
       className={`bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-xs shadow-inner ${className}`}
     >
-      <div className="flex flex-wrap items-center gap-3 text-[9.5px] font-mono">
+      <div className="flex flex-nowrap overflow-x-auto scrollbar-none items-center gap-3 text-[9.5px] font-mono cursor-grab active:cursor-grabbing">
         {/* Main Arp ON/OFF Toggle (Mappable via MIDI) */}
-        <div className="relative flex flex-col items-center">
+        <div className="relative flex flex-col items-center flex-shrink-0">
           <MidiLearnBadge
             isMidiLearnActive={isMidiLearnActive}
             isSelectedForLearn={selectedLearnAction === 'arpToggle'}

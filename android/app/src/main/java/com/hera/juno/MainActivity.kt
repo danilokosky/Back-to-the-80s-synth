@@ -20,6 +20,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -55,6 +56,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.layout
@@ -99,12 +101,86 @@ private val JunoWoodDark = Color(0xFF3A180B)
 // Smooth Cubic-Bezier curve for organic drawer unfolding, fader adaptation, and magnetic edge snapping
 private val SilkySmoothEasing = CubicBezierEasing(0.22f, 1.0f, 0.36f, 1.0f)
 
-// Proportional vertical elongation State for the Faders section (0.50f .. 2.15f: flattens down to 50% in Large-Screen Keyboard Mode, elongates up to 2.15x in main view).
+// Proportional vertical elongation State for the Faders section (0.50f .. 4.00f: flattens down to 50% in Keyboard Focus Mode, elongates in Main View).
 // Passed as State<Float> and read ONLY inside Modifier.layout so animating faders causes ZERO recompositions!
 private val LocalFaderElongationState = compositionLocalOf<State<Float>> { mutableFloatStateOf(1.0f) }
 
 // Proportional horizontal elongation State for the Faders section (strictly 1.00f .. 1.30f = ONLY elongation up to +30%, NEVER compression < 1.00f).
 private val LocalFaderHorizElongationState = compositionLocalOf<State<Float>> { mutableFloatStateOf(1.0f) }
+
+/**
+ * Universal Mouse Click-and-Drag + Touch Drag Scroll Modifier:
+ * - Allows clicking and dragging with a mouse (or finger) to scroll horizontally and/or vertically,
+ *   even when starting the drag directly over clickable buttons or badges in the Header, Voicing/Presets bar,
+ *   Arpeggiator bar, MIDI Profile drawer, Preset Browser, Synth Rack, or Keyboard Top Controls bar.
+ * - Uses a two-phase pass strategy:
+ *   1. Observes in PointerEventPass.Main until drag exceeds slop (3.5.dp), so child sliders/faders/wheels/keys
+ *      that consume their own drag in Main are NEVER interfered with.
+ *   2. Once drag-scroll engages, switches to PointerEventPass.Initial and consumes all subsequent moves and release
+ *      so child .clickable buttons cancel cleanly and never fire accidental clicks after dragging.
+ */
+private fun Modifier.mouseAndTouchDragScroll(
+    horizontalScrollState: ScrollState? = null,
+    verticalScrollState: ScrollState? = null
+): Modifier = this.pointerInput(horizontalScrollState, verticalScrollState) {
+    val dragSlopPx = 3.5.dp.toPx()
+    awaitEachGesture {
+        var totalDx = 0f
+        var totalDy = 0f
+        var isDraggingScroll = false
+
+        while (true) {
+            val pass = if (isDraggingScroll) PointerEventPass.Initial else PointerEventPass.Main
+            val event = awaitPointerEvent(pass)
+            val changes = event.changes
+            if (changes.isEmpty()) break
+
+            val anyPressed = changes.any { it.pressed }
+            if (!anyPressed) {
+                if (isDraggingScroll) {
+                    for (c in changes) {
+                        c.consume()
+                    }
+                }
+                break
+            }
+
+            val primary = changes.first()
+            if (!isDraggingScroll && primary.isConsumed) {
+                // A child fader, touch strip, wheel, or piano key is actively dragging
+                break
+            }
+
+            val pan = primary.position - primary.previousPosition
+            if (pan != Offset.Zero) {
+                totalDx += pan.x
+                totalDy += pan.y
+                if (!isDraggingScroll) {
+                    val canScrollH = horizontalScrollState != null && horizontalScrollState.maxValue > 0 && kotlin.math.abs(totalDx) > dragSlopPx
+                    val canScrollV = verticalScrollState != null && verticalScrollState.maxValue > 0 && kotlin.math.abs(totalDy) > dragSlopPx
+                    if (canScrollH || canScrollV) {
+                        isDraggingScroll = true
+                    }
+                }
+                if (isDraggingScroll) {
+                    for (c in changes) {
+                        c.consume()
+                    }
+                    if (horizontalScrollState != null && horizontalScrollState.maxValue > 0 && pan.x != 0f) {
+                        horizontalScrollState.dispatchRawDelta(-pan.x)
+                    }
+                    if (verticalScrollState != null && verticalScrollState.maxValue > 0 && pan.y != 0f) {
+                        verticalScrollState.dispatchRawDelta(-pan.y)
+                    }
+                }
+            } else if (isDraggingScroll) {
+                for (c in changes) {
+                    c.consume()
+                }
+            }
+        }
+    }
+}
 
 class MainActivity : ComponentActivity() {
 
@@ -466,7 +542,8 @@ fun HeraJunoNativeScreen(
         //   (TopHeaderBar + TopRainbow + SynthRack + Scrollbar + BottomRainbow + VoicingPresetBar)
         //   fits 100.0% of the viewport height via the smooth Fader Accordion ("efeito de sanfona", 0.82f..2.15f),
         //   with zero cut-off on VoicingPresetBar and zero peeking of the Arpeggiator/Keyboard at the bottom.
-        val isLargeScreenOrDex = rawWidthDp >= 860.dp || rawHeightDp >= 460.dp
+        val isPhoneWidescreen = rawAspectRatio >= 1.90f && rawHeightDp < 410.dp && rawWidthDp < 920.dp
+        val isLargeScreenOrDex = !isPhoneWidescreen && (rawWidthDp >= 640.dp || rawHeightDp >= 370.dp)
         val referenceCanvasHeightDp = if (isLargeScreenOrDex) {
             val targetVirtualWidthDp = (rawWidthDp.value * 0.78f).coerceIn(820f, 980f)
             (targetVirtualWidthDp / rawAspectRatio.coerceAtLeast(1.18f)).coerceIn(420f, 540f).dp
@@ -500,7 +577,7 @@ fun HeraJunoNativeScreen(
                         .weight(1f)
                         .fillMaxHeight()
                 ) {
-                    val isLargeScreenOrDex = maxHeight >= 385.dp && maxWidth >= 680.dp
+                    val canCompactFadersWithKeyboard = !isPhoneWidescreen && maxHeight >= 300.dp
                     var keyboardOctaves by remember { mutableIntStateOf(3) }
                     val responsiveSemitones = (keyboardOctaves * 12).coerceIn(24, 48)
                     val currentDensity = LocalDensity.current
@@ -514,16 +591,16 @@ fun HeraJunoNativeScreen(
                     var measuredPresetsPx by remember { mutableIntStateOf(0) }
                     var measuredKeyboardBoxPx by remember { mutableIntStateOf(0) }
 
-                    // On Large Screens (Tablets / Samsung DeX), scrolling down or activating Keyboard View switches
-                    // into "Modo de Visualização das Teclas" (isKeyboardFocusMode = true):
+                    // On all non-phone-widescreen resolutions (Tablets, Samsung DeX, Monitors, Resizable Windows),
+                    // scrolling down or activating Keyboard View switches into "Modo de Visualização das Teclas" (isKeyboardFocusMode = true):
                     // TopHeaderBar scrolls off the top, Faders flatten by up to 50% (staying playable at the top of the screen),
                     // an 8dp breathing space separates Faders from Strings (VoicingPresetBar), followed by ARP and an
                     // ergonomic bottom-half Piano Keyboard — all fitting 100.0% inside the screen!
                     var isKeyboardFocusMode by remember { mutableStateOf(false) }
                     var isModeAnimating by remember { mutableStateOf(false) }
 
-                    LaunchedEffect(showKeyboard, isLargeScreenOrDex) {
-                        if (!showKeyboard || !isLargeScreenOrDex) {
+                    LaunchedEffect(showKeyboard, canCompactFadersWithKeyboard) {
+                        if (!showKeyboard || !canCompactFadersWithKeyboard) {
                             isKeyboardFocusMode = false
                         }
                     }
@@ -555,8 +632,8 @@ fun HeraJunoNativeScreen(
                     val scrollbarPx = with(currentDensity) { 8.dp.roundToPx() }
                     val separatorsTotalPx = rainbowPx * 2 + scrollbarPx
 
-                    // Breathing space between Faders section and Strings (VoicingPresetBar) in Large-Screen Keyboard Mode
-                    val targetRackToVoicingSpacerDp = if (isLargeScreenOrDex && showKeyboard && isKeyboardFocusMode) 8.dp else 0.dp
+                    // Breathing space between Faders section and Strings (VoicingPresetBar) in Keyboard Focus Mode
+                    val targetRackToVoicingSpacerDp = if (canCompactFadersWithKeyboard && showKeyboard && isKeyboardFocusMode) 8.dp else 0.dp
                     val rackToVoicingSpacerDp by animateDpAsState(
                         targetValue = targetRackToVoicingSpacerDp,
                         animationSpec = tween(durationMillis = 360, easing = SilkySmoothEasing),
@@ -570,22 +647,25 @@ fun HeraJunoNativeScreen(
                     val staticNonRackArea1Dp = headerHeightDp + 3f + 8f + 3f + voicingHeightDp
                     val baseRackHeightDp = 232f
 
-                    // Size the Keyboard:
-                    // - On Large Screens (Tablets / Samsung DeX): keep the keyboard ergonomic in the bottom half of the screen
-                    //   (~41% of screen height, 168dp..218dp) so keys are never overly elongated vertically, leaving room above
-                    //   for the 50%-flattened playable Faders + Strings + Arpeggiator!
-                    // - On Smartphones (!isLargeScreenOrDex): preserve the existing Area 2 height behavior 100% untouched.
+                    // Coordinate Keyboard Height & Compacted Faders Height across ALL resolutions:
+                    // - When canCompactFadersWithKeyboard is true: guarantee that Keyboard + OpenDrawers + Voicing + 8dp Spacer + Separators
+                    //   leaves at least 116dp (50% of 232dp) for the compacted Faders so both Faders and Keyboard fit 100.0% on screen together!
+                    // - On Smartphone Widescreen (!canCompactFadersWithKeyboard): preserve the praised smartphone widescreen layout 100% untouched.
+                    val fixedView2OverheadDp = 14f + 8f + voicingHeightDp + arpHeightDp + presetsHeightDp + 6f
+                    val maxKeyboardToFitWithFadersDp = (maxHeight.value - fixedView2OverheadDp - 116f).coerceAtLeast(112f)
                     val targetKeyboardSectionHeight = remember(
-                        isLargeScreenOrDex,
+                        canCompactFadersWithKeyboard,
                         maxHeight.value,
                         voicingHeightDp,
                         arpHeightDp,
                         presetsHeightDp,
+                        maxKeyboardToFitWithFadersDp,
                         arpExpanded,
                         showPresetsDialog
                     ) {
-                        if (isLargeScreenOrDex) {
-                            (maxHeight.value * 0.41f).coerceIn(168f, 218f).dp
+                        if (canCompactFadersWithKeyboard) {
+                            val idealKbDp = (maxHeight.value * 0.40f).coerceIn(132f, 218f)
+                            minOf(idealKbDp, maxKeyboardToFitWithFadersDp).coerceIn(112f, 218f).dp
                         } else {
                             val availableBelowVoicingDp = maxHeight.value - voicingHeightDp - arpHeightDp - presetsHeightDp - 6f
                             availableBelowVoicingDp.coerceIn(165f, 460f).dp
@@ -597,31 +677,23 @@ fun HeraJunoNativeScreen(
                         label = "keyboardSectionHeight"
                     )
 
-                    // Dynamic Fader Accordion ("Efeito de Sanfona dos Faders", 0.50f .. 2.15f):
-                    // - In View 1 (Main Focus, or Smartphones): frames Header + Faders + Voicing at 100.0% of viewportHeightPx.
-                    // - In View 2 on Large Screens (isLargeScreenOrDex && showKeyboard && isKeyboardFocusMode):
-                    //   flattens Faders down to 50%..88% so Compressed Faders + 8dp Spacer + Strings + ARP + Ergonomic Keyboard
-                    //   fit 100.0% of viewportHeightPx simultaneously!
+                    // Dynamic Fader Accordion ("Efeito de Sanfona dos Faders", 0.50f .. 4.00f):
+                    // - MANDATORY MAIN HEADER SAFEGUARD: Whenever the Main Header (TopHeaderBar) is active (!isKeyboardFocusMode),
+                    //   ONLY TopHeaderBar + SynthRack + VoicingPresetBar fill 100.0% of viewportHeightPx (0px of ARP or Keyboard visible!).
+                    // - In View 2 (canCompactFadersWithKeyboard && showKeyboard && isKeyboardFocusMode):
+                    //   flattens Faders down to 50%..92% so Compressed Faders + 8dp Spacer + Strings + ARP + Ergonomic Keyboard
+                    //   fit 100.0% of viewportHeightPx simultaneously across all screen resolutions!
                     val baseRackHeightPx = with(currentDensity) { baseRackHeightDp.dp.toPx() }.coerceAtLeast(1f)
                     val inlineDrawerAllowancePx = remember(
-                        arpExpanded,
-                        showKeyboard,
                         showPresetsDialog,
-                        measuredArpPx,
                         measuredPresetsPx,
                         currentDensity
                     ) {
-                        val arpPx = if (arpExpanded && !showKeyboard) {
-                            if (measuredArpPx > 0) measuredArpPx.toFloat() else with(currentDensity) { 40.dp.toPx() }
-                        } else {
-                            0f
-                        }
-                        val presetsPx = if (showPresetsDialog) {
+                        if (showPresetsDialog) {
                             if (measuredPresetsPx > 0) measuredPresetsPx.toFloat() else with(currentDensity) { 54.dp.toPx() }
                         } else {
                             0f
                         }
-                        arpPx + presetsPx
                     }
                     val keyboardFocusDrawersAndKeysPx = remember(
                         arpExpanded,
@@ -642,15 +714,16 @@ fun HeraJunoNativeScreen(
                         } else {
                             0f
                         }
-                        val kbPx = if (measuredKeyboardBoxPx > 0) {
+                        val targetKbBoxPx = with(currentDensity) { (targetKeyboardSectionHeight + 6.dp).toPx() }
+                        val kbPx = if (measuredKeyboardBoxPx > 0 && kotlin.math.abs(measuredKeyboardBoxPx - targetKbBoxPx) < 18f) {
                             measuredKeyboardBoxPx.toFloat()
                         } else {
-                            with(currentDensity) { (targetKeyboardSectionHeight + 6.dp).toPx() }
+                            targetKbBoxPx
                         }
                         arpPx + presetsPx + kbPx
                     }
                     val targetFaderElongation = remember(
-                        isLargeScreenOrDex,
+                        canCompactFadersWithKeyboard,
                         showKeyboard,
                         isKeyboardFocusMode,
                         viewportHeightPx,
@@ -662,12 +735,12 @@ fun HeraJunoNativeScreen(
                         keyboardFocusDrawersAndKeysPx
                     ) {
                         if (measuredHeaderPx > 0 && measuredVoicingPx > 0) {
-                            if (isLargeScreenOrDex && showKeyboard && isKeyboardFocusMode) {
+                            if (canCompactFadersWithKeyboard && showKeyboard && isKeyboardFocusMode) {
                                 val idealCompressedRackPx = (viewportHeightPx - separatorsTotalPx - targetRackToVoicingSpacerPx - measuredVoicingPx).toFloat() - keyboardFocusDrawersAndKeysPx
-                                (idealCompressedRackPx / baseRackHeightPx).coerceIn(0.50f, 0.88f)
+                                (idealCompressedRackPx / baseRackHeightPx).coerceIn(0.50f, 0.92f)
                             } else {
                                 val idealRackPx = (viewportHeightPx - measuredHeaderPx - measuredVoicingPx - separatorsTotalPx).toFloat() - inlineDrawerAllowancePx
-                                (idealRackPx / baseRackHeightPx).coerceIn(0.82f, 2.15f)
+                                (idealRackPx / baseRackHeightPx).coerceIn(0.82f, 4.00f)
                             }
                         } else {
                             1.00f
@@ -689,34 +762,46 @@ fun HeraJunoNativeScreen(
                         isDrawerTransitioning = false
                     }
 
-                    // Delicate, Silky Soft Magnetic Edge Snap & Large-Screen Two-View Mode Switcher:
-                    // - On Large Screens (isLargeScreenOrDex && showKeyboard): pulling/scrolling down switches smoothly into
-                    //   View 2 (isKeyboardFocusMode = true, scrolling TopHeaderBar off-screen to measuredHeaderPx and flattening
-                    //   Faders up to 50% so Faders + Spacer + Strings + Arp + Keyboard fit 100% on screen). Pulling/scrolling
-                    //   back up toward the header restores View 1 (isKeyboardFocusMode = false, scroll = 0, full-height Faders).
-                    // - On Smartphones (!isLargeScreenOrDex): preserves the existing magnetic edge snap 100% untouched.
+                    // MANDATORY MAIN HEADER VISIBILITY SAFEGUARD (Real-Time During Upward Scroll):
+                    // Whenever the user scrolls up and the Main Header (TopHeaderBar) begins to appear on screen
+                    // (mainVerticalScroll.value <= 85% of measuredHeaderPx), immediately exit Keyboard Focus Mode
+                    // so the Faders expand to frame ONLY [Main Header + Faders + Presets Footer] on screen!
+                    LaunchedEffect(mainVerticalScroll.value, measuredHeaderPx, canCompactFadersWithKeyboard, showKeyboard) {
+                        if (isKeyboardFocusMode && !isModeAnimating && measuredHeaderPx > 0) {
+                            val headerVisibleThresholdPx = (measuredHeaderPx * 0.85f).roundToInt()
+                            if (mainVerticalScroll.value <= headerVisibleThresholdPx) {
+                                isKeyboardFocusMode = false
+                            }
+                        }
+                    }
+
+                    // Delicate, Silky Soft Magnetic Edge Snap & Two-View Mode Switcher with Mandatory Header Safeguard:
+                    // - Whenever the Main Header is visible on release (current < measuredHeaderPx * 0.85f when returning up, or current < downTriggerPx from top),
+                    //   it obligatorily snaps to scroll = 0 with isKeyboardFocusMode = false so ONLY [TopHeaderBar + Faders + VoicingPresetBar] appear!
+                    // - Whenever scrolling down past downTriggerPx when showKeyboard && canCompactFadersWithKeyboard is true,
+                    //   it activates isKeyboardFocusMode = true and scrolls to measuredHeaderPx so [Compacted Faders + Spacer + Voicing + Arp + Keyboard] fit 100% together!
                     val isScrollInProgress = mainVerticalScroll.isScrollInProgress
-                    LaunchedEffect(isScrollInProgress, isDrawerTransitioning, isLargeScreenOrDex, showKeyboard) {
+                    LaunchedEffect(isScrollInProgress, isDrawerTransitioning, canCompactFadersWithKeyboard, showKeyboard, isKeyboardFocusMode) {
                         if (!isScrollInProgress && !isDrawerTransitioning && !isModeAnimating) {
                             delay(28L)
                             if (!mainVerticalScroll.isScrollInProgress && !isDrawerTransitioning && !isModeAnimating) {
                                 val current = mainVerticalScroll.value
                                 val latestMax = mainVerticalScroll.maxValue
-                                if (isLargeScreenOrDex && showKeyboard && measuredHeaderPx > 0) {
-                                    val downTriggerPx = (measuredHeaderPx * 0.25f).roundToInt().coerceIn(12, 48)
-                                    val upTriggerPx = (measuredHeaderPx * 0.75f).roundToInt().coerceAtLeast(downTriggerPx + 6)
+                                if (measuredHeaderPx > 0 && canCompactFadersWithKeyboard && showKeyboard) {
+                                    val downTriggerPx = (measuredHeaderPx * 0.22f).roundToInt().coerceIn(10, 44)
+                                    val upTriggerPx = (measuredHeaderPx * 0.85f).roundToInt().coerceAtLeast(downTriggerPx + 6)
                                     if (!isKeyboardFocusMode && current >= downTriggerPx) {
                                         isModeAnimating = true
                                         isKeyboardFocusMode = true
                                         mainVerticalScroll.animateScrollTo(
                                             value = measuredHeaderPx,
-                                            animationSpec = tween(durationMillis = 380, easing = SilkySmoothEasing)
+                                            animationSpec = tween(durationMillis = 360, easing = SilkySmoothEasing)
                                         )
-                                        delay(380L)
+                                        delay(360L)
                                         if (mainVerticalScroll.maxValue > 0 && mainVerticalScroll.value != measuredHeaderPx) {
                                             mainVerticalScroll.animateScrollTo(
                                                 value = measuredHeaderPx.coerceAtMost(mainVerticalScroll.maxValue),
-                                                animationSpec = tween(durationMillis = 180, easing = SilkySmoothEasing)
+                                                animationSpec = tween(durationMillis = 160, easing = SilkySmoothEasing)
                                             )
                                         }
                                         isModeAnimating = false
@@ -725,36 +810,41 @@ fun HeraJunoNativeScreen(
                                         isKeyboardFocusMode = false
                                         mainVerticalScroll.animateScrollTo(
                                             value = 0,
-                                            animationSpec = tween(durationMillis = 380, easing = SilkySmoothEasing)
+                                            animationSpec = tween(durationMillis = 360, easing = SilkySmoothEasing)
                                         )
-                                        delay(380L)
+                                        delay(360L)
                                         isModeAnimating = false
                                     } else if (!isKeyboardFocusMode && current in 1 until downTriggerPx) {
                                         mainVerticalScroll.animateScrollTo(
                                             value = 0,
-                                            animationSpec = tween(durationMillis = 320, easing = SilkySmoothEasing)
+                                            animationSpec = tween(durationMillis = 300, easing = SilkySmoothEasing)
                                         )
                                     } else if (isKeyboardFocusMode && current != measuredHeaderPx && latestMax >= measuredHeaderPx) {
                                         mainVerticalScroll.animateScrollTo(
                                             value = measuredHeaderPx.coerceAtMost(latestMax),
-                                            animationSpec = tween(durationMillis = 320, easing = SilkySmoothEasing)
+                                            animationSpec = tween(durationMillis = 300, easing = SilkySmoothEasing)
                                         )
                                     }
                                 } else if (latestMax > 6) {
-                                    val snapThresholdPx = (latestMax * 0.28f).roundToInt().coerceIn(22, 165)
-                                    if (current in 2..snapThresholdPx) {
+                                    // Mandatory Header Safeguard on Smartphone Widescreen or when Keyboard is closed:
+                                    // If any part of the Main Header is visible on screen (current < measuredHeaderPx),
+                                    // snap cleanly to 0 (Header + Faders + Presets only) unless the user actively pulled past 30% of the header to go to Area 2.
+                                    val headerThreshold = if (measuredHeaderPx > 0) measuredHeaderPx else 48
+                                    val snapTopZone = maxOf(headerThreshold, (latestMax * 0.30f).roundToInt().coerceIn(22, 165))
+                                    val snapBottomZone = (latestMax * 0.28f).roundToInt().coerceIn(22, 165)
+                                    if (current in 1..snapTopZone) {
                                         mainVerticalScroll.animateScrollTo(
                                             value = 0,
                                             animationSpec = tween(
-                                                durationMillis = 420,
+                                                durationMillis = 380,
                                                 easing = SilkySmoothEasing
                                             )
                                         )
-                                    } else if (current in (latestMax - snapThresholdPx) until (latestMax - 1)) {
+                                    } else if (current in (latestMax - snapBottomZone) until (latestMax - 1)) {
                                         mainVerticalScroll.animateScrollTo(
                                             value = latestMax,
                                             animationSpec = tween(
-                                                durationMillis = 420,
+                                                durationMillis = 380,
                                                 easing = SilkySmoothEasing
                                             )
                                         )
@@ -838,7 +928,8 @@ fun HeraJunoNativeScreen(
                         onPanic = {
                             holdSustain = false
                             onPanicAllNotesOff()
-                        }
+                        },
+                        verticalScrollState = mainVerticalScroll
                     )
 
                         // 1A. INLINE EXPANDABLE MIDI PROFILE DRAWER (Unfolds smoothly downward from TopHeaderBar!)
@@ -862,7 +953,8 @@ fun HeraJunoNativeScreen(
                                     midiManager = midiManager,
                                     uiRevision = rev,
                                     onNotifyUiChanged = onNotifyUiChanged,
-                                    onCollapse = { showProfileDialog = false }
+                                    onCollapse = { showProfileDialog = false },
+                                    verticalScrollState = mainVerticalScroll
                                 )
                             }
                         }
@@ -971,15 +1063,15 @@ fun HeraJunoNativeScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .layout { measurable, constraints ->
-                                    val elong = faderElongationState.value.coerceIn(0.50f, 2.15f)
+                                    val elong = faderElongationState.value.coerceIn(0.50f, 4.00f)
                                     val animatedH = (232f * elong).dp.roundToPx()
                                     val minRackPx = (232f * 0.50f).dp.roundToPx()
-                                    val maxRackPx = (232f * 2.15f).dp.roundToPx()
+                                    val maxRackPx = (232f * 4.00f).dp.roundToPx()
                                     // Lock to exact integer pixel remainder when animation settles (within 6px) so
                                     // View 1 (Header + Rack + Voicing) OR View 2 (Compressed Rack + Spacer + Voicing + Arp + Keyboard)
                                     // equals 100.0% of viewportHeightPx with 0px leftover!
                                     val exactTargetRackPx = if (measuredHeaderPx > 0 && measuredVoicingPx > 0) {
-                                        if (isLargeScreenOrDex && showKeyboard && isKeyboardFocusMode) {
+                                        if (canCompactFadersWithKeyboard && showKeyboard && isKeyboardFocusMode) {
                                             (viewportHeightPx - separatorsTotalPx - rackToVoicingSpacerPx - measuredVoicingPx - keyboardFocusDrawersAndKeysPx.roundToInt())
                                                 .coerceIn(minRackPx, maxRackPx)
                                         } else {
@@ -1006,6 +1098,10 @@ fun HeraJunoNativeScreen(
                                 .graphicsLayer { clip = true }
                                 .background(Color(0xFF11131A))
                                 .horizontalScroll(rackScrollState)
+                                .mouseAndTouchDragScroll(
+                                    horizontalScrollState = rackScrollState,
+                                    verticalScrollState = mainVerticalScroll
+                                )
                         ) {
                             Layout(
                                 content = {
@@ -1190,7 +1286,7 @@ fun HeraJunoNativeScreen(
                                 arpExpanded = !arpExpanded
                             },
                             onToggleKeyboard = {
-                                if (isLargeScreenOrDex) {
+                                if (canCompactFadersWithKeyboard) {
                                     if (!showKeyboard) {
                                         showKeyboard = true
                                         isKeyboardFocusMode = true
@@ -1245,7 +1341,8 @@ fun HeraJunoNativeScreen(
                             },
                             onImportPreset = {
                                 importPresetLauncher.launch(arrayOf("*/*"))
-                            }
+                            },
+                            verticalScrollState = mainVerticalScroll
                         )
                     }
 
@@ -1290,7 +1387,8 @@ fun HeraJunoNativeScreen(
                                             currentPresetIndex = 0
                                         }
                                         Toast.makeText(context, "Timbre removido: ${presetToDelete.name}", Toast.LENGTH_SHORT).show()
-                                    }
+                                    },
+                                    verticalScrollState = mainVerticalScroll
                                 )
                             }
                         }
@@ -1337,7 +1435,8 @@ fun HeraJunoNativeScreen(
                                         val next = !holdSustain
                                         holdSustain = next
                                         if (!next) onPanicAllNotesOff()
-                                    }
+                                    },
+                                    verticalScrollState = mainVerticalScroll
                                 )
                             }
                         }
@@ -1374,9 +1473,16 @@ fun HeraJunoNativeScreen(
                                         .padding(horizontal = 6.dp, vertical = 5.dp),
                                     verticalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
-                        // Top Controls Bar (Octave Transpose, Keys Span 2/3/4 OCT, HOLD, Shortcuts Toggle, and View Switcher)
+                        // Top Controls Bar (Octave Transpose, Keys Span 2/3/4 OCT, HOLD, Shortcuts Toggle, and View Switcher — supports mouse click-and-drag scroll!)
+                        val kbTopBarScroll = rememberScrollState()
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(kbTopBarScroll)
+                                .mouseAndTouchDragScroll(
+                                    horizontalScrollState = kbTopBarScroll,
+                                    verticalScrollState = mainVerticalScroll
+                                ),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -1526,7 +1632,7 @@ fun HeraJunoNativeScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                if (isLargeScreenOrDex) {
+                                if (canCompactFadersWithKeyboard) {
                                     Box(
                                         contentAlignment = Alignment.Center,
                                         modifier = Modifier
@@ -1997,14 +2103,15 @@ private fun TopHeaderBar(
     onToggleProfileExpanded: () -> Unit,
     keepScreenOn: Boolean,
     onToggleKeepScreenOn: () -> Unit,
-    onPanic: () -> Unit
+    onPanic: () -> Unit,
+    verticalScrollState: ScrollState? = null
 ) {
     val headerScroll = rememberScrollState()
     val baseHeaderDensity = LocalDensity.current
     // Proportional Header Zoom (up to 30% max reduction: 0.70f .. 1.00f):
     // Automatically scales the header proportionally so 100% of its controls (including TELA ON and PANIC)
     // fit inside a single screen whenever possible within the 30% zoom limit. If a screen is narrower than
-    // 70% of the natural header width, zoom clamps at -30% (0.70f) and horizontal touchscreen drag takes over.
+    // 70% of the natural header width, zoom clamps at -30% (0.70f) and horizontal mouse/touch drag takes over.
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
@@ -2014,7 +2121,7 @@ private fun TopHeaderBar(
                 )
             )
     ) {
-        val naturalHeaderWidthDp = 788f
+        val naturalHeaderWidthDp = 910f
         val headerZoom = (maxWidth.value / naturalHeaderWidthDp).coerceIn(0.70f, 1.00f)
         val zoomedHeaderDensity = remember(baseHeaderDensity.density, baseHeaderDensity.fontScale, headerZoom) {
             Density(
@@ -2027,8 +2134,13 @@ private fun TopHeaderBar(
         CompositionLocalProvider(LocalDensity provides zoomedHeaderDensity) {
             Row(
                 modifier = Modifier
-                    .widthIn(min = minHeaderRowWidth)
+                    .fillMaxWidth()
                     .horizontalScroll(headerScroll)
+                    .widthIn(min = minHeaderRowWidth)
+                    .mouseAndTouchDragScroll(
+                        horizontalScrollState = headerScroll,
+                        verticalScrollState = verticalScrollState
+                    )
                     .padding(horizontal = 8.dp, vertical = 3.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
@@ -2493,7 +2605,8 @@ private fun MidiProfileInlineDrawer(
     midiManager: MidiControllerManager,
     uiRevision: Int,
     onNotifyUiChanged: () -> Unit,
-    onCollapse: () -> Unit
+    onCollapse: () -> Unit,
+    verticalScrollState: ScrollState? = null
 ) {
     val revIgnore = uiRevision
     val activeId = remember(revIgnore) { midiManager.activeProfileId }
@@ -2510,6 +2623,10 @@ private fun MidiProfileInlineDrawer(
             .background(Color(0xFF0A1114))
             .border(1.dp, Color(0xFF059669))
             .horizontalScroll(scroll)
+            .mouseAndTouchDragScroll(
+                horizontalScrollState = scroll,
+                verticalScrollState = verticalScrollState
+            )
             .padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
@@ -2904,7 +3021,8 @@ private fun VoicingPresetBar(
     onToggleKeyboard: () -> Unit,
     onSaveUserPreset: () -> Unit,
     onExportPreset: () -> Unit,
-    onImportPreset: () -> Unit
+    onImportPreset: () -> Unit,
+    verticalScrollState: ScrollState? = null
 ) {
     val revIgnore = uiRevision
     val bankNumber = (presetIndex / 7) + 1
@@ -2940,6 +3058,10 @@ private fun VoicingPresetBar(
             .background(Color(0xFF10131B), RoundedCornerShape(5.dp))
             .border(1.dp, Color(0xFF23293A), RoundedCornerShape(5.dp))
             .horizontalScroll(barScroll)
+            .mouseAndTouchDragScroll(
+                horizontalScrollState = barScroll,
+                verticalScrollState = verticalScrollState
+            )
             .padding(horizontal = 7.dp, vertical = 4.5.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
@@ -3371,10 +3493,12 @@ private fun VoicingTimbresInlineBrowser(
     allPresets: List<HeraPreset>,
     userPresetCount: Int,
     onSelectPreset: (Int) -> Unit,
-    onDeleteUserPreset: (HeraPreset) -> Unit
+    onDeleteUserPreset: (HeraPreset) -> Unit,
+    verticalScrollState: ScrollState? = null
 ) {
     var selectedBankFilter by remember { mutableIntStateOf(0) } // 0 = TODOS EM ORDEM, 1..8 = BANK 1..8, 99 = USER
     val bankTabsScroll = rememberScrollState()
+    val presetGridScroll = rememberScrollState()
 
     Column(
         modifier = Modifier
@@ -3388,7 +3512,11 @@ private fun VoicingTimbresInlineBrowser(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .horizontalScroll(bankTabsScroll),
+                .horizontalScroll(bankTabsScroll)
+                .mouseAndTouchDragScroll(
+                    horizontalScrollState = bankTabsScroll,
+                    verticalScrollState = verticalScrollState
+                ),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
@@ -3428,7 +3556,7 @@ private fun VoicingTimbresInlineBrowser(
             }
         }
 
-        // Ordered Grid/List of Banks and Patches (4 columns per row for clean desktop browser look)
+        // Ordered Grid/List of Banks and Patches (4 columns per row for clean desktop browser look, with mouse drag-scroll)
         val filteredIndices = remember(allPresets, selectedBankFilter) {
             allPresets.indices.filter { idx ->
                 val p = allPresets[idx]
@@ -3443,7 +3571,13 @@ private fun VoicingTimbresInlineBrowser(
 
         val rows = filteredIndices.chunked(4)
         Column(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 110.dp)
+                .verticalScroll(presetGridScroll)
+                .mouseAndTouchDragScroll(
+                    verticalScrollState = presetGridScroll
+                ),
             verticalArrangement = Arrangement.spacedBy(3.dp)
         ) {
             for (rowIndices in rows) {
@@ -3557,7 +3691,8 @@ private fun ArpeggiatorKeyboardBar(
     arpBpm: Float,
     onArpBpmChange: (Float) -> Unit,
     holdSustain: Boolean,
-    onToggleHold: () -> Unit
+    onToggleHold: () -> Unit,
+    verticalScrollState: ScrollState? = null
 ) {
     val modeNames = listOf("UP", "U/D", "DOWN")
     val rateLabels = listOf("1/4" to 4, "1/8" to 8, "1/16" to 16)
@@ -3569,6 +3704,10 @@ private fun ArpeggiatorKeyboardBar(
             .background(Color(0xFF0C0E14), RoundedCornerShape(5.dp))
             .border(1.dp, Color(0xFF202534), RoundedCornerShape(5.dp))
             .horizontalScroll(arpScroll)
+            .mouseAndTouchDragScroll(
+                horizontalScrollState = arpScroll,
+                verticalScrollState = verticalScrollState
+            )
             .padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -4766,7 +4905,7 @@ private fun SynthModuleCard(
             }
         }
     ) { measurables, constraints ->
-        val elong = elongationState.value.coerceIn(0.50f, 2.15f)
+        val elong = elongationState.value.coerceIn(0.50f, 4.00f)
         val totalH = (224f * elong).dp.roundToPx()
         val headerEstH = (if (elong < 0.80f) 16.dp else 19.dp).roundToPx()
         val footerEstH = (if (elong < 0.80f) 12.dp else 15.dp).roundToPx()
@@ -4840,7 +4979,7 @@ private fun JunoParamFader(
             .layout { measurable, constraints ->
                 val hElong = horizElongState.value.coerceIn(1.00f, 1.30f)
                 val targetW = (42f * hElong).dp.roundToPx()
-                val elong = elongationState.value.coerceIn(0.50f, 2.15f)
+                val elong = elongationState.value.coerceIn(0.50f, 4.00f)
                 val faderScale = if (elong >= 1f) {
                     1f + (elong - 1f) * 1.22f
                 } else {

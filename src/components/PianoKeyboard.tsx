@@ -287,9 +287,9 @@ export const PianoKeyboard: React.FC<PianoKeyboardProps> = ({
 
   return (
     <div className={`flex flex-col bg-zinc-950 border-t-4 border-zinc-800 p-2 shadow-2xl select-none ${className}`}>
-      {/* Keyboard Controls Bar */}
-      <div className="flex flex-wrap items-center justify-between pb-2 px-1 text-xs text-zinc-400 gap-2">
-        <div className="flex items-center gap-2">
+      {/* Keyboard Controls Bar (Supports horizontal mouse click-and-drag scroll when partially off-screen) */}
+      <div className="flex flex-nowrap overflow-x-auto scrollbar-none items-center justify-between pb-2 px-1 text-xs text-zinc-400 gap-2 cursor-grab active:cursor-grabbing">
+        <div className="flex items-center gap-2 flex-shrink-0">
           {/* Octave transpose */}
           <div className="flex items-center bg-zinc-900 border border-zinc-700 rounded px-1 py-0.5 shadow-inner">
             <span className="text-[9px] font-mono uppercase text-zinc-500 mr-1.5 font-bold">Octave</span>
@@ -341,7 +341,7 @@ export const PianoKeyboard: React.FC<PianoKeyboardProps> = ({
           </button>
         </div>
 
-        <div className="flex items-center gap-2 text-[10px] font-mono text-zinc-500">
+        <div className="flex items-center gap-2 text-[10px] font-mono text-zinc-500 flex-shrink-0">
           <span>61-Key Polyphonic Keyboard</span>
           <span className="text-zinc-700">|</span>
           <span>Click & Drag / QWERTY Keyboard Supported</span>
@@ -375,6 +375,7 @@ export const PianoKeyboard: React.FC<PianoKeyboardProps> = ({
             />
             <span className="text-[8px] font-mono uppercase text-zinc-400 mb-1">Pitch</span>
             <div
+              data-no-drag-scroll="true"
               onPointerDown={handlePitchBendPointerDown}
               onPointerMove={handlePitchBendPointerMove}
               onPointerUp={handlePitchBendPointerUp}
@@ -420,6 +421,7 @@ export const PianoKeyboard: React.FC<PianoKeyboardProps> = ({
             />
             <span className="text-[8px] font-mono uppercase text-zinc-400 mb-1">Mod</span>
             <div
+              data-no-drag-scroll="true"
               onPointerDown={handleModWheelPointerDown}
               onPointerMove={handleModWheelPointerMove}
               className="relative w-7 h-28 bg-zinc-950 rounded border border-zinc-700 shadow-inner cursor-ns-resize flex items-center justify-center overflow-hidden"
@@ -441,6 +443,7 @@ export const PianoKeyboard: React.FC<PianoKeyboardProps> = ({
 
         {/* Piano Roll Keys */}
         <div
+          data-no-drag-scroll="true"
           className="relative flex-1 h-36 bg-zinc-950 rounded-b shadow-2xl overflow-hidden touch-none border border-zinc-800"
           onPointerDown={() => {
             isMouseDownRef.current = true;
