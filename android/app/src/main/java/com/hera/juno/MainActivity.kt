@@ -577,33 +577,20 @@ fun HeraJunoNativeScreen(
                         .weight(1f)
                         .fillMaxHeight()
                 ) {
-                    val canCompactFadersWithKeyboard = !isPhoneWidescreen && maxHeight >= 300.dp
                     var keyboardOctaves by remember { mutableIntStateOf(3) }
                     val responsiveSemitones = (keyboardOctaves * 12).coerceIn(24, 48)
                     val currentDensity = LocalDensity.current
 
                     // Sub-pixel accurate measured heights of TopHeaderBar (+ Profile Drawer), VoicingPresetBar,
-                    // PresetBrowser Drawer, Arpeggiator Drawer, and Keyboard Box so both View 1 (Main Synth Focus)
-                    // and View 2 (Keyboard Performance Mode) fit 100.0% of the screen across all proportions:
+                    // PresetBrowser Drawer, Arpeggiator Drawer, and Keyboard Box:
                     var measuredHeaderPx by remember { mutableIntStateOf(0) }
                     var measuredVoicingPx by remember { mutableIntStateOf(0) }
                     var measuredArpPx by remember { mutableIntStateOf(0) }
                     var measuredPresetsPx by remember { mutableIntStateOf(0) }
                     var measuredKeyboardBoxPx by remember { mutableIntStateOf(0) }
 
-                    // On all non-phone-widescreen resolutions (Tablets, Samsung DeX, Monitors, Resizable Windows),
-                    // scrolling down or activating Keyboard View switches into "Modo de Visualização das Teclas" (isKeyboardFocusMode = true):
-                    // TopHeaderBar scrolls off the top, Faders flatten by up to 50% (staying playable at the top of the screen),
-                    // an 8dp breathing space separates Faders from Strings (VoicingPresetBar), followed by ARP and an
-                    // ergonomic bottom-half Piano Keyboard — all fitting 100.0% inside the screen!
                     var isKeyboardFocusMode by remember { mutableStateOf(false) }
                     var isModeAnimating by remember { mutableStateOf(false) }
-
-                    LaunchedEffect(showKeyboard, canCompactFadersWithKeyboard) {
-                        if (!showKeyboard || !canCompactFadersWithKeyboard) {
-                            isKeyboardFocusMode = false
-                        }
-                    }
 
                     val headerHeightDp = if (measuredHeaderPx > 0) {
                         with(currentDensity) { measuredHeaderPx.toDp().value }
@@ -631,41 +618,50 @@ fun HeraJunoNativeScreen(
                     val rainbowPx = with(currentDensity) { 3.dp.roundToPx() }
                     val scrollbarPx = with(currentDensity) { 8.dp.roundToPx() }
                     val separatorsTotalPx = rainbowPx * 2 + scrollbarPx
-
-                    // Breathing space between Faders section and Strings (VoicingPresetBar) in Keyboard Focus Mode
-                    val targetRackToVoicingSpacerDp = if (canCompactFadersWithKeyboard && showKeyboard && isKeyboardFocusMode) 8.dp else 0.dp
-                    val rackToVoicingSpacerDp by animateDpAsState(
-                        targetValue = targetRackToVoicingSpacerDp,
-                        animationSpec = tween(durationMillis = 360, easing = SilkySmoothEasing),
-                        label = "rackToVoicingSpacer"
-                    )
-                    val rackToVoicingSpacerPx = with(currentDensity) { rackToVoicingSpacerDp.roundToPx() }
-                    val targetRackToVoicingSpacerPx = with(currentDensity) { targetRackToVoicingSpacerDp.roundToPx() }
-
-                    // Fixed static heights inside Area of Interest 1:
-                    // Header + TopRainbow (3dp) + Horizontal Scrollbar (8dp) + BottomRainbow (3dp) + VoicingBar
-                    val staticNonRackArea1Dp = headerHeightDp + 3f + 8f + 3f + voicingHeightDp
                     val baseRackHeightDp = 232f
 
-                    // Coordinate Keyboard Height & Compacted Faders Height across ALL resolutions:
-                    // - When canCompactFadersWithKeyboard is true: guarantee that Keyboard + OpenDrawers + Voicing + 8dp Spacer + Separators
-                    //   leaves at least 116dp (50% of 232dp) for the compacted Faders so both Faders and Keyboard fit 100.0% on screen together!
-                    // - On Smartphone Widescreen (!canCompactFadersWithKeyboard): preserve the praised smartphone widescreen layout 100% untouched.
+                    // RULE 3 — STRICT CONFLICT-FREE FEASIBILITY GUARD:
+                    // Dynamic Two-View Fader Compaction (canCompactFadersWithKeyboard) is enabled ONLY when:
+                    // 1. The screen is NOT a smartphone widescreen (!isPhoneWidescreen), AND
+                    // 2. The total viewport height can strictly fit at least 50% compacted faders (116dp) +
+                    //    separators (14dp) + 8dp spacer + Voicing bar + open drawers + an ergonomic keyboard (>= 124dp).
+                    // If a specific resolution or open-drawer combination cannot fit both without conflict,
+                    // canCompactFadersWithKeyboard becomes false and the screen remains 100% free of dynamic fader resizing during scroll!
                     val fixedView2OverheadDp = 14f + 8f + voicingHeightDp + arpHeightDp + presetsHeightDp + 6f
-                    val maxKeyboardToFitWithFadersDp = (maxHeight.value - fixedView2OverheadDp - 116f).coerceAtLeast(112f)
+                    val minCompactedRackDp = 116f
+                    val minErgonomicKeyboardDp = 124f
+                    val canCompactFadersWithKeyboard = !isPhoneWidescreen &&
+                        maxHeight.value >= (fixedView2OverheadDp + minCompactedRackDp + minErgonomicKeyboardDp)
+
+                    LaunchedEffect(showKeyboard, canCompactFadersWithKeyboard) {
+                        if (!showKeyboard || !canCompactFadersWithKeyboard) {
+                            isKeyboardFocusMode = false
+                        }
+                    }
+
+                    val effectiveKeyboardFocusMode = canCompactFadersWithKeyboard && showKeyboard && isKeyboardFocusMode
+
+                    // Breathing space between Faders section and Strings (VoicingPresetBar) in Keyboard Focus Mode
+                    val targetRackToVoicingSpacerDp = if (effectiveKeyboardFocusMode) 8.dp else 0.dp
+                    val rackToVoicingSpacerDp by animateDpAsState(
+                        targetValue = targetRackToVoicingSpacerDp,
+                        animationSpec = tween(durationMillis = 320, easing = SilkySmoothEasing),
+                        label = "rackToVoicingSpacer"
+                    )
+                    val targetRackToVoicingSpacerPx = with(currentDensity) { targetRackToVoicingSpacerDp.roundToPx() }
+
+                    val maxKeyboardToFitWithFadersDp = (maxHeight.value - fixedView2OverheadDp - minCompactedRackDp).coerceAtLeast(minErgonomicKeyboardDp)
                     val targetKeyboardSectionHeight = remember(
                         canCompactFadersWithKeyboard,
                         maxHeight.value,
                         voicingHeightDp,
                         arpHeightDp,
                         presetsHeightDp,
-                        maxKeyboardToFitWithFadersDp,
-                        arpExpanded,
-                        showPresetsDialog
+                        maxKeyboardToFitWithFadersDp
                     ) {
                         if (canCompactFadersWithKeyboard) {
-                            val idealKbDp = (maxHeight.value * 0.40f).coerceIn(132f, 218f)
-                            minOf(idealKbDp, maxKeyboardToFitWithFadersDp).coerceIn(112f, 218f).dp
+                            val idealKbDp = (maxHeight.value * 0.40f).coerceIn(minErgonomicKeyboardDp, 218f)
+                            minOf(idealKbDp, maxKeyboardToFitWithFadersDp).coerceIn(minErgonomicKeyboardDp, 218f).dp
                         } else {
                             val availableBelowVoicingDp = maxHeight.value - voicingHeightDp - arpHeightDp - presetsHeightDp - 6f
                             availableBelowVoicingDp.coerceIn(165f, 460f).dp
@@ -677,12 +673,6 @@ fun HeraJunoNativeScreen(
                         label = "keyboardSectionHeight"
                     )
 
-                    // Dynamic Fader Accordion ("Efeito de Sanfona dos Faders", 0.50f .. 4.00f):
-                    // - MANDATORY MAIN HEADER SAFEGUARD: Whenever the Main Header (TopHeaderBar) is active (!isKeyboardFocusMode),
-                    //   ONLY TopHeaderBar + SynthRack + VoicingPresetBar fill 100.0% of viewportHeightPx (0px of ARP or Keyboard visible!).
-                    // - In View 2 (canCompactFadersWithKeyboard && showKeyboard && isKeyboardFocusMode):
-                    //   flattens Faders down to 50%..92% so Compressed Faders + 8dp Spacer + Strings + ARP + Ergonomic Keyboard
-                    //   fit 100.0% of viewportHeightPx simultaneously across all screen resolutions!
                     val baseRackHeightPx = with(currentDensity) { baseRackHeightDp.dp.toPx() }.coerceAtLeast(1f)
                     val inlineDrawerAllowancePx = remember(
                         showPresetsDialog,
@@ -700,7 +690,6 @@ fun HeraJunoNativeScreen(
                         showPresetsDialog,
                         measuredArpPx,
                         measuredPresetsPx,
-                        measuredKeyboardBoxPx,
                         targetKeyboardSectionHeight,
                         currentDensity
                     ) {
@@ -715,42 +704,58 @@ fun HeraJunoNativeScreen(
                             0f
                         }
                         val targetKbBoxPx = with(currentDensity) { (targetKeyboardSectionHeight + 6.dp).toPx() }
-                        val kbPx = if (measuredKeyboardBoxPx > 0 && kotlin.math.abs(measuredKeyboardBoxPx - targetKbBoxPx) < 18f) {
-                            measuredKeyboardBoxPx.toFloat()
-                        } else {
-                            targetKbBoxPx
-                        }
-                        arpPx + presetsPx + kbPx
+                        arpPx + presetsPx + targetKbBoxPx
                     }
-                    val targetFaderElongation = remember(
-                        canCompactFadersWithKeyboard,
-                        showKeyboard,
-                        isKeyboardFocusMode,
+
+                    val minRackPx = with(currentDensity) { (baseRackHeightDp * 0.50f).dp.roundToPx() }
+                    val maxRackPx = with(currentDensity) { (baseRackHeightDp * 3.00f).dp.roundToPx() }
+                    val defaultRackPx = with(currentDensity) { baseRackHeightDp.dp.roundToPx() }
+
+                    val targetRackHeightPx = remember(
+                        effectiveKeyboardFocusMode,
                         viewportHeightPx,
                         measuredHeaderPx,
                         measuredVoicingPx,
                         separatorsTotalPx,
                         targetRackToVoicingSpacerPx,
                         inlineDrawerAllowancePx,
-                        keyboardFocusDrawersAndKeysPx
+                        keyboardFocusDrawersAndKeysPx,
+                        minRackPx,
+                        maxRackPx,
+                        defaultRackPx
                     ) {
                         if (measuredHeaderPx > 0 && measuredVoicingPx > 0) {
-                            if (canCompactFadersWithKeyboard && showKeyboard && isKeyboardFocusMode) {
-                                val idealCompressedRackPx = (viewportHeightPx - separatorsTotalPx - targetRackToVoicingSpacerPx - measuredVoicingPx).toFloat() - keyboardFocusDrawersAndKeysPx
-                                (idealCompressedRackPx / baseRackHeightPx).coerceIn(0.50f, 0.92f)
+                            if (effectiveKeyboardFocusMode) {
+                                (viewportHeightPx - separatorsTotalPx - targetRackToVoicingSpacerPx - measuredVoicingPx - keyboardFocusDrawersAndKeysPx.roundToInt())
+                                    .coerceIn(minRackPx, maxRackPx)
                             } else {
-                                val idealRackPx = (viewportHeightPx - measuredHeaderPx - measuredVoicingPx - separatorsTotalPx).toFloat() - inlineDrawerAllowancePx
-                                (idealRackPx / baseRackHeightPx).coerceIn(0.82f, 4.00f)
+                                (viewportHeightPx - measuredHeaderPx - measuredVoicingPx - separatorsTotalPx - inlineDrawerAllowancePx.roundToInt())
+                                    .coerceIn(minRackPx, maxRackPx)
                             }
                         } else {
-                            1.00f
+                            defaultRackPx
                         }
                     }
-                    // Smoothly animated fader elongation state — read only in Modifier.layout for 0-recomposition 120fps performance
+
+                    val targetFaderElongation = remember(targetRackHeightPx, baseRackHeightPx, effectiveKeyboardFocusMode) {
+                        val raw = targetRackHeightPx.toFloat() / baseRackHeightPx
+                        if (effectiveKeyboardFocusMode) {
+                            raw.coerceIn(0.50f, 0.92f)
+                        } else {
+                            raw.coerceIn(0.82f, 3.00f)
+                        }
+                    }
+
+                    // Smoothly animated fader elongation & rack height — read ONLY in Modifier.layout / Canvas for 0-recomposition 120fps performance
                     val faderElongationState = animateFloatAsState(
                         targetValue = targetFaderElongation,
-                        animationSpec = tween(durationMillis = 360, easing = SilkySmoothEasing),
+                        animationSpec = tween(durationMillis = 320, easing = SilkySmoothEasing),
                         label = "faderElongation"
+                    )
+                    val animatedRackHeightPxState = animateIntAsState(
+                        targetValue = targetRackHeightPx,
+                        animationSpec = tween(durationMillis = 320, easing = SilkySmoothEasing),
+                        label = "animatedRackHeightPx"
                     )
                     val rackZoomedDensity = previewMatchedDensity
 
@@ -758,85 +763,68 @@ fun HeraJunoNativeScreen(
                     var isDrawerTransitioning by remember { mutableStateOf(false) }
                     LaunchedEffect(showKeyboard, arpExpanded, showPresetsDialog, showProfileDialog) {
                         isDrawerTransitioning = true
-                        delay(360L)
+                        delay(340L)
                         isDrawerTransitioning = false
                     }
 
-                    // MANDATORY MAIN HEADER VISIBILITY SAFEGUARD (Real-Time During Upward Scroll):
-                    // Whenever the user scrolls up and the Main Header (TopHeaderBar) begins to appear on screen
-                    // (mainVerticalScroll.value <= 85% of measuredHeaderPx), immediately exit Keyboard Focus Mode
-                    // so the Faders expand to frame ONLY [Main Header + Faders + Presets Footer] on screen!
-                    LaunchedEffect(mainVerticalScroll.value, measuredHeaderPx, canCompactFadersWithKeyboard, showKeyboard) {
-                        if (isKeyboardFocusMode && !isModeAnimating && measuredHeaderPx > 0) {
-                            val headerVisibleThresholdPx = (measuredHeaderPx * 0.85f).roundToInt()
-                            if (mainVerticalScroll.value <= headerVisibleThresholdPx) {
-                                isKeyboardFocusMode = false
-                            }
-                        }
-                    }
-
-                    // Delicate, Silky Soft Magnetic Edge Snap & Two-View Mode Switcher with Mandatory Header Safeguard:
-                    // - Whenever the Main Header is visible on release (current < measuredHeaderPx * 0.85f when returning up, or current < downTriggerPx from top),
-                    //   it obligatorily snaps to scroll = 0 with isKeyboardFocusMode = false so ONLY [TopHeaderBar + Faders + VoicingPresetBar] appear!
-                    // - Whenever scrolling down past downTriggerPx when showKeyboard && canCompactFadersWithKeyboard is true,
-                    //   it activates isKeyboardFocusMode = true and scrolls to measuredHeaderPx so [Compacted Faders + Spacer + Voicing + Arp + Keyboard] fit 100% together!
+                    // RULE 4 — DISCRETE POST-SCROLL SELECTION WITH HYSTERESIS (ZERO MID-SCROLL HEIGHT MUTATION):
+                    // Mode selection and magnetic edge snapping happen EXCLUSIVELY after the user finishes scrolling (!isScrollInProgress).
+                    // Never mutating isKeyboardFocusMode mid-scroll eliminates the scroll-clamping feedback loop (zero screen flicker!).
                     val isScrollInProgress = mainVerticalScroll.isScrollInProgress
                     LaunchedEffect(isScrollInProgress, isDrawerTransitioning, canCompactFadersWithKeyboard, showKeyboard, isKeyboardFocusMode) {
                         if (!isScrollInProgress && !isDrawerTransitioning && !isModeAnimating) {
-                            delay(28L)
+                            delay(32L)
                             if (!mainVerticalScroll.isScrollInProgress && !isDrawerTransitioning && !isModeAnimating) {
                                 val current = mainVerticalScroll.value
                                 val latestMax = mainVerticalScroll.maxValue
                                 if (measuredHeaderPx > 0 && canCompactFadersWithKeyboard && showKeyboard) {
-                                    val downTriggerPx = (measuredHeaderPx * 0.22f).roundToInt().coerceIn(10, 44)
-                                    val upTriggerPx = (measuredHeaderPx * 0.85f).roundToInt().coerceAtLeast(downTriggerPx + 6)
+                                    // Hysteresis thresholds: 35% of header to go down to View 2; 75% of header to return up to View 1
+                                    val downTriggerPx = (measuredHeaderPx * 0.35f).roundToInt().coerceIn(14, 48)
+                                    val upTriggerPx = (measuredHeaderPx * 0.75f).roundToInt().coerceAtLeast(downTriggerPx + 8)
                                     if (!isKeyboardFocusMode && current >= downTriggerPx) {
                                         isModeAnimating = true
                                         isKeyboardFocusMode = true
                                         mainVerticalScroll.animateScrollTo(
                                             value = measuredHeaderPx,
-                                            animationSpec = tween(durationMillis = 360, easing = SilkySmoothEasing)
+                                            animationSpec = tween(durationMillis = 320, easing = SilkySmoothEasing)
                                         )
-                                        delay(360L)
-                                        if (mainVerticalScroll.maxValue > 0 && mainVerticalScroll.value != measuredHeaderPx) {
-                                            mainVerticalScroll.animateScrollTo(
-                                                value = measuredHeaderPx.coerceAtMost(mainVerticalScroll.maxValue),
-                                                animationSpec = tween(durationMillis = 160, easing = SilkySmoothEasing)
-                                            )
+                                        delay(320L)
+                                        if (mainVerticalScroll.maxValue >= measuredHeaderPx && mainVerticalScroll.value != measuredHeaderPx) {
+                                            mainVerticalScroll.scrollTo(measuredHeaderPx)
                                         }
                                         isModeAnimating = false
                                     } else if (isKeyboardFocusMode && current <= upTriggerPx) {
+                                        // Mandatory Main Header Safeguard: returning up so Main Header appears -> View 1 (scroll = 0)
                                         isModeAnimating = true
                                         isKeyboardFocusMode = false
                                         mainVerticalScroll.animateScrollTo(
                                             value = 0,
-                                            animationSpec = tween(durationMillis = 360, easing = SilkySmoothEasing)
+                                            animationSpec = tween(durationMillis = 320, easing = SilkySmoothEasing)
                                         )
-                                        delay(360L)
+                                        delay(320L)
                                         isModeAnimating = false
                                     } else if (!isKeyboardFocusMode && current in 1 until downTriggerPx) {
                                         mainVerticalScroll.animateScrollTo(
                                             value = 0,
-                                            animationSpec = tween(durationMillis = 300, easing = SilkySmoothEasing)
+                                            animationSpec = tween(durationMillis = 280, easing = SilkySmoothEasing)
                                         )
                                     } else if (isKeyboardFocusMode && current != measuredHeaderPx && latestMax >= measuredHeaderPx) {
                                         mainVerticalScroll.animateScrollTo(
                                             value = measuredHeaderPx.coerceAtMost(latestMax),
-                                            animationSpec = tween(durationMillis = 300, easing = SilkySmoothEasing)
+                                            animationSpec = tween(durationMillis = 280, easing = SilkySmoothEasing)
                                         )
                                     }
                                 } else if (latestMax > 6) {
-                                    // Mandatory Header Safeguard on Smartphone Widescreen or when Keyboard is closed:
-                                    // If any part of the Main Header is visible on screen (current < measuredHeaderPx),
-                                    // snap cleanly to 0 (Header + Faders + Presets only) unless the user actively pulled past 30% of the header to go to Area 2.
-                                    val headerThreshold = if (measuredHeaderPx > 0) measuredHeaderPx else 48
-                                    val snapTopZone = maxOf(headerThreshold, (latestMax * 0.30f).roundToInt().coerceIn(22, 165))
-                                    val snapBottomZone = (latestMax * 0.28f).roundToInt().coerceIn(22, 165)
+                                    // Conflict-Free Static Mode (Smartphone Widescreen, Keyboard closed, or Edge-case resolution):
+                                    // Faders never resize during scroll. Only gentle magnetic snap near top header or bottom edge.
+                                    val headerThreshold = if (measuredHeaderPx > 0) (measuredHeaderPx * 0.85f).roundToInt() else 44
+                                    val snapTopZone = minOf(headerThreshold, (latestMax * 0.35f).roundToInt().coerceAtLeast(18))
+                                    val snapBottomZone = (latestMax * 0.25f).roundToInt().coerceIn(20, 140)
                                     if (current in 1..snapTopZone) {
                                         mainVerticalScroll.animateScrollTo(
                                             value = 0,
                                             animationSpec = tween(
-                                                durationMillis = 380,
+                                                durationMillis = 320,
                                                 easing = SilkySmoothEasing
                                             )
                                         )
@@ -844,7 +832,7 @@ fun HeraJunoNativeScreen(
                                         mainVerticalScroll.animateScrollTo(
                                             value = latestMax,
                                             animationSpec = tween(
-                                                durationMillis = 380,
+                                                durationMillis = 320,
                                                 easing = SilkySmoothEasing
                                             )
                                         )
@@ -1063,29 +1051,8 @@ fun HeraJunoNativeScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .layout { measurable, constraints ->
-                                    val elong = faderElongationState.value.coerceIn(0.50f, 4.00f)
-                                    val animatedH = (232f * elong).dp.roundToPx()
-                                    val minRackPx = (232f * 0.50f).dp.roundToPx()
-                                    val maxRackPx = (232f * 4.00f).dp.roundToPx()
-                                    // Lock to exact integer pixel remainder when animation settles (within 6px) so
-                                    // View 1 (Header + Rack + Voicing) OR View 2 (Compressed Rack + Spacer + Voicing + Arp + Keyboard)
-                                    // equals 100.0% of viewportHeightPx with 0px leftover!
-                                    val exactTargetRackPx = if (measuredHeaderPx > 0 && measuredVoicingPx > 0) {
-                                        if (canCompactFadersWithKeyboard && showKeyboard && isKeyboardFocusMode) {
-                                            (viewportHeightPx - separatorsTotalPx - rackToVoicingSpacerPx - measuredVoicingPx - keyboardFocusDrawersAndKeysPx.roundToInt())
-                                                .coerceIn(minRackPx, maxRackPx)
-                                        } else {
-                                            (viewportHeightPx - measuredHeaderPx - measuredVoicingPx - separatorsTotalPx - inlineDrawerAllowancePx.roundToInt())
-                                                .coerceIn(minRackPx, maxRackPx)
-                                        }
-                                    } else {
-                                        animatedH
-                                    }
-                                    val targetH = if (kotlin.math.abs(animatedH - exactTargetRackPx) <= 6) {
-                                        exactTargetRackPx
-                                    } else {
-                                        animatedH
-                                    }
+                                    val elong = faderElongationState.value.coerceIn(0.50f, 3.00f)
+                                    val targetH = animatedRackHeightPxState.value.coerceAtLeast(1)
                                     val padV = (3.5f * elong.coerceIn(0.50f, 1.35f)).dp.roundToPx()
                                     val innerH = (targetH - padV * 2).coerceAtLeast(0)
                                     val placeable = measurable.measure(
@@ -2036,12 +2003,13 @@ private fun LiveVoiceIndicatorsBox(isJupiter8: Boolean) {
 @Composable
 private fun LiveOscilloscopeBox() {
     val waveformSamples = remember { FloatArray(256) }
+    val waveformPath = remember { Path() }
     var waveformTick by remember { mutableIntStateOf(0) }
     LaunchedEffect(Unit) {
         while (true) {
             NativeSynthBridge.getWaveformBuffer(waveformSamples)
             waveformTick++
-            delay(16L)
+            delay(24L)
         }
     }
     Box(
@@ -2064,15 +2032,15 @@ private fun LiveOscilloscopeBox() {
                     end = Offset(w, midY),
                     strokeWidth = 1f
                 )
-                val path = Path()
+                waveformPath.reset()
                 val n = waveformSamples.size
                 for (i in 0 until n) {
                     val x = (i.toFloat() / (n - 1).toFloat()) * w
                     val y = (midY - waveformSamples[i].coerceIn(-1f, 1f) * (h * 0.42f))
-                    if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                    if (i == 0) waveformPath.moveTo(x, y) else waveformPath.lineTo(x, y)
                 }
                 drawPath(
-                    path = path,
+                    path = waveformPath,
                     color = Color(0xFF34D399),
                     style = Stroke(width = 1.8f, cap = StrokeCap.Round)
                 )
@@ -3954,9 +3922,11 @@ private fun SynthRackSectionCard(
 ) {
     val rev = uiRevision
     val isJupiter8 = (paramState[SynthParam.SynthModel] ?: 0f) >= 0.5f
-    val hElong = LocalFaderHorizElongationState.current.value.coerceIn(1.00f, 1.30f)
-    val vScale = LocalFaderElongationState.current.value.coerceIn(0.50f, 1.00f)
-    val faderRowGap = (7f * hElong).dp
+    // IMPORTANT FOR 120FPS: Do NOT read LocalFaderElongationState.current.value or LocalFaderHorizElongationState.current.value
+    // inside the @Composable body of SynthRackSectionCard! Reading .value here would recompose all 9 cards & 34 faders every frame.
+    val hElong = 1.0f
+    val vScale = 1.0f
+    val faderRowGap = 7.dp
     when (section) {
         MidiSection.LFO -> {
             val manTrigActive = (paramState[SynthParam.LFOManualTrig] ?: 0f) >= 0.5f
@@ -4771,11 +4741,9 @@ private fun SynthModuleCard(
 ) {
     val elongationState = LocalFaderElongationState.current
     val horizElongState = LocalFaderHorizElongationState.current
-    val hElong = horizElongState.value.coerceIn(1.00f, 1.30f)
-    val isCompressed = elongationState.value < 0.80f
     // Single-pass custom Layout: measures content() ONCE first to obtain cardWidth, then measures
     // header and footer bars at fixed width cardWidth. Completely eliminates IntrinsicSize.Max double-measurement
-    // and reads elongationState.value only during the layout phase (ZERO recompositions during fader animation!).
+    // and reads elongationState.value / horizElongState.value ONLY during the layout phase (ZERO recompositions during fader animation!).
     Layout(
         modifier = Modifier
             .clip(RoundedCornerShape(5.dp))
@@ -4784,7 +4752,6 @@ private fun SynthModuleCard(
         content = {
             // [0] Main Controls Area (measured first to determine card width in a single pass)
             Box(
-                modifier = Modifier.padding(horizontal = (14f * hElong).dp),
                 contentAlignment = Alignment.Center
             ) {
                 content()
@@ -4801,7 +4768,7 @@ private fun SynthModuleCard(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(if (isCompressed) 13.5.dp else 16.dp)
+                        .height(15.dp)
                         .background(accentColor.copy(alpha = 0.18f))
                         .padding(horizontal = 4.dp),
                     contentAlignment = Alignment.Center
@@ -4814,7 +4781,7 @@ private fun SynthModuleCard(
                         Text(
                             text = title,
                             color = accentColor,
-                            fontSize = if (isCompressed) 6.2.sp else 6.8.sp,
+                            fontSize = 6.6.sp,
                             lineHeight = 7.sp,
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Black,
@@ -4878,7 +4845,7 @@ private fun SynthModuleCard(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(if (isCompressed) 9.5.dp else 12.dp)
+                            .height(11.dp)
                             .background(Color(0xFF080A0F))
                             .padding(horizontal = 3.dp),
                         contentAlignment = Alignment.Center
@@ -4886,7 +4853,7 @@ private fun SynthModuleCard(
                         Text(
                             text = footer,
                             color = Color(0xFF9CA3AF),
-                            fontSize = if (isCompressed) 5.sp else 5.5.sp,
+                            fontSize = 5.4.sp,
                             lineHeight = 6.sp,
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.SemiBold,
@@ -4905,11 +4872,13 @@ private fun SynthModuleCard(
             }
         }
     ) { measurables, constraints ->
-        val elong = elongationState.value.coerceIn(0.50f, 4.00f)
+        val elong = elongationState.value.coerceIn(0.50f, 3.00f)
+        val hElong = horizElongState.value.coerceIn(1.00f, 1.30f)
         val totalH = (224f * elong).dp.roundToPx()
-        val headerEstH = (if (elong < 0.80f) 16.dp else 19.dp).roundToPx()
-        val footerEstH = (if (elong < 0.80f) 12.dp else 15.dp).roundToPx()
+        val headerEstH = 18.dp.roundToPx()
+        val footerEstH = 14.dp.roundToPx()
         val padV = (4f * elong.coerceIn(0.45f, 1.30f)).dp.roundToPx()
+        val padHPx = (14f * hElong).dp.roundToPx()
         val contentMaxH = (totalH - headerEstH - footerEstH - padV * 2).coerceAtLeast(36)
 
         // 1. Measure content once with unconstrained width to get natural card width
@@ -4921,7 +4890,7 @@ private fun SynthModuleCard(
                 maxHeight = contentMaxH
             )
         )
-        val cardW = maxOf(contentPlaceable.width, constraints.minWidth, 64.dp.roundToPx())
+        val cardW = maxOf(contentPlaceable.width + padHPx * 2, constraints.minWidth, 64.dp.roundToPx())
 
         // 2. Measure header and footer at exact cardW
         val fixedWConstraints = Constraints(
@@ -4950,7 +4919,8 @@ private fun SynthModuleCard(
  * Sleek Desktop-Grade Vertical Juno-60 Fader (`42.dp` wide):
  * - Comfortable vertical spacing away from both the header and the footer
  * - Fixed geometry: turning MIDI Learn ON/OFF or selecting a fader NEVER alters fader height or position!
- * - Reads LocalFaderElongationState ONLY inside Modifier.layout for 0-recomposition 120fps fader adaptation!
+ * - Reads LocalFaderElongationState and LocalFaderHorizElongationState ONLY inside Modifier.layout & Canvas
+ *   for 0-recomposition 120fps fader adaptation!
  */
 @Composable
 private fun JunoParamFader(
@@ -4971,7 +4941,6 @@ private fun JunoParamFader(
     val isSelectedTarget = isLearnMode && midiManager.learningTargetKey == param.key
     val elongationState = LocalFaderElongationState.current
     val horizElongState = LocalFaderHorizElongationState.current
-    val isFlattenedFader = elongationState.value < 0.80f
 
     Box(
         contentAlignment = Alignment.TopCenter,
@@ -4979,7 +4948,7 @@ private fun JunoParamFader(
             .layout { measurable, constraints ->
                 val hElong = horizElongState.value.coerceIn(1.00f, 1.30f)
                 val targetW = (42f * hElong).dp.roundToPx()
-                val elong = elongationState.value.coerceIn(0.50f, 4.00f)
+                val elong = elongationState.value.coerceIn(0.50f, 3.00f)
                 val faderScale = if (elong >= 1f) {
                     1f + (elong - 1f) * 1.22f
                 } else {
@@ -4994,7 +4963,7 @@ private fun JunoParamFader(
                 }
             }
     ) {
-        // Fixed-dimension Fader Body (Never shifts when MIDI Learn toggles!)
+        // Fixed-dimension Fader Body (Never shifts when MIDI Learn toggles, ZERO recomposition during resize!)
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier
@@ -5017,8 +4986,8 @@ private fun JunoParamFader(
                     onNotifyUiChanged()
                 }
                 .padding(
-                    top = if (isFlattenedFader) 1.5.dp else 2.5.dp,
-                    bottom = if (isFlattenedFader) 2.dp else 4.5.dp,
+                    top = 2.dp,
+                    bottom = 3.dp,
                     start = 2.dp,
                     end = 2.dp
                 )
@@ -5027,8 +4996,8 @@ private fun JunoParamFader(
             Text(
                 text = param.label,
                 color = Color(0xFFE5E7EB),
-                fontSize = if (isFlattenedFader) 6.5.sp else 7.5.sp,
-                lineHeight = if (isFlattenedFader) 6.8.sp else 8.sp,
+                fontSize = 7.2.sp,
+                lineHeight = 7.6.sp,
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.ExtraBold,
                 maxLines = 1
@@ -5071,28 +5040,18 @@ private fun JunoParamFader(
                         )
                     }
             ) {
-                // Left Scale Labels: Refines into a 5-point studio console scale (100/75/50/25/0) when elongated on Tablets/DeX
-                val showDetailedScale = elongationState.value >= 1.22f
-                val showMidScale = elongationState.value >= 0.62f
+                // Static 3-point scale labels (100 / 50 / 0) — zero conditional recomposition during fader animation!
                 Column(
                     modifier = Modifier
                         .align(Alignment.CenterStart)
                         .fillMaxHeight()
-                        .padding(vertical = if (isFlattenedFader) 3.dp else 6.dp, horizontal = 1.dp),
+                        .padding(vertical = 4.dp, horizontal = 1.dp),
                     verticalArrangement = Arrangement.SpaceBetween,
                     horizontalAlignment = Alignment.End
                 ) {
-                    Text("100", color = Color(0xFF6B7280), fontSize = if (isFlattenedFader) 4.4.sp else 5.sp, fontFamily = FontFamily.Monospace)
-                    if (showDetailedScale) {
-                        Text("75", color = Color(0xFF4B5563), fontSize = 4.6.sp, fontFamily = FontFamily.Monospace)
-                    }
-                    if (showMidScale) {
-                        Text("50", color = Color(0xFF6B7280), fontSize = if (isFlattenedFader) 4.4.sp else 5.sp, fontFamily = FontFamily.Monospace)
-                    }
-                    if (showDetailedScale) {
-                        Text("25", color = Color(0xFF4B5563), fontSize = 4.6.sp, fontFamily = FontFamily.Monospace)
-                    }
-                    Text("0", color = Color(0xFF6B7280), fontSize = if (isFlattenedFader) 4.4.sp else 5.sp, fontFamily = FontFamily.Monospace)
+                    Text("100", color = Color(0xFF6B7280), fontSize = 4.8.sp, fontFamily = FontFamily.Monospace)
+                    Text("50", color = Color(0xFF6B7280), fontSize = 4.8.sp, fontFamily = FontFamily.Monospace)
+                    Text("0", color = Color(0xFF6B7280), fontSize = 4.8.sp, fontFamily = FontFamily.Monospace)
                 }
 
                 Canvas(modifier = Modifier.fillMaxSize()) {
